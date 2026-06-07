@@ -290,12 +290,7 @@ function scrHome(){
       <div class="pbar"><div class="pfill" style="width:${prog}%"></div></div>
       <div class="pmeta"><span>${v.pitches.length} pitch${v.pitches.length>1?'es':''} · ${venueProgress(v)}% tested</span><span>${esc(v.cluster||'')}</span></div></div></div>`;
   }).join('');
-  const teamPrompt=(window.FB&&FB.isConfigured()&&!FB.isSignedIn())
-    ? `<div class="note af" style="display:flex;align-items:center;gap:10px;justify-content:space-between"><span><b>Team sync is set up.</b> Sign in once to share data live with your team.</span></div>
-       <button class="btn primary" id="joinTeam">👥 Join team sync — sign in with Google</button>
-       <button class="btn ghost" id="joinTeamEmail" style="margin-top:-4px">No Google account? Sign in with email</button>` : '';
   return `<div class="note"><b>Data collection.</b> Everything you enter saves to this device automatically and works offline.</div>
-    ${teamPrompt}
     <h2 class="sec">Venues</h2>${cards}
     <button class="btn dash" id="uploadBrief">⤓ Upload pitch brief (PDF) → autofill</button>
     <button class="btn ghost" id="addVenue">+ Add venue manually</button>`;
@@ -354,9 +349,7 @@ function scrVenue(){
     ${v.pitches.length>1
       ? `<div class="hint">Combined report includes all ${v.pitches.length} pitches in sequence. The Word file matches the Field Report Template exactly.</div>
          <button class="btn primary" id="genWordAll">⤓ Word report — all ${v.pitches.length} pitches</button>
-         <button class="btn ghost" id="genWord">Word — this pitch only (${esc(p.name)})</button>
-         <button class="btn primary" id="genPdfAll">⤓ PDF report — all pitches</button>
-         <button class="btn ghost" id="genPdf">PDF — this pitch only</button>`
+         <button class="btn primary" id="genPdfAll">⤓ PDF report — all pitches</button>`
       : `<div class="hint">Generates for <b>${esc(p.name)}</b>. The Word file matches the Field Report Template exactly.</div>
          <button class="btn primary" id="genWord">⤓ Word report (.docx)</button>
          <button class="btn primary" id="genPdf">⤓ PDF report</button>`}
@@ -531,7 +524,7 @@ function scrSettings(){
   const fbOn=window.FB&&FB.isSignedIn(), fbHas=window.FB&&FB.hasConfig(), fbEmbed=window.FB&&FB.usingEmbedded();
   const fbStat= !window.FB?'Module not loaded' : (!fbHas?'Not set up — paste your Firebase config below' : (fbOn?('Team sync on · '+esc(FB.userEmail())):'Sign in to start syncing'));
   const configBox = fbEmbed
-    ? `<div class="hint" style="color:var(--green-d)">✓ Team sync is configured for your team — just sign in below.</div>`
+    ? ''
     : `<div class="card"><div class="field"><label>Firebase web config (paste from Firebase console)</label>
         <textarea id="fbConfig" placeholder='{ "apiKey": "…", "authDomain": "…", "projectId": "…", … }' autocapitalize="off" spellcheck="false" style="min-height:96px;font-size:12px">${window.FB?esc(FB.getConfigText()):''}</textarea></div></div>`;
   const signinBox = fbOn
@@ -621,8 +614,6 @@ function bind(){
   app.querySelectorAll('[data-pitch]').forEach(e=>e.onclick=()=>{CURP=+e.dataset.pitch;render();});
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
 
-  if($('joinTeam'))$('joinTeam').onclick=()=>{ if(window.FB) FB.connect(); };
-  if($('joinTeamEmail'))$('joinTeamEmail').onclick=()=>go('settings');
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
   if($('addVenue'))$('addVenue').onclick=addVenueManual;
   app.querySelectorAll('[data-edit-venue]').forEach(e=>e.onclick=editVenue);
