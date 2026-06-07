@@ -162,10 +162,16 @@ Per-venue conflicts use last-edit-wins, and each venue records who last changed 
 7. In the app: **Data tab → Team sync (Firebase)** → paste the config → **Connect team sync** → sign in
    with Google. You're live.
 
+### Bake the config in (so nobody pastes it)
+Open **`firebase-config.js`** in the repo and fill in the values from step 5, then commit & push. After
+that the config is built into the app — **no teammate ever pastes anything**. The web config is
+public/not-secret, so it's safe to commit; your data is protected by the security rules (email allowlist).
+
 ### For each teammate
 - Add their Google email to the `allowed()` list in the Firestore rules (step 6) and Publish.
-- They open the same app URL, paste the **same config** in Data → Team sync, and Connect with their own
-  Google account. From then on everyone sees the same venues update live.
+- They open the same app URL and tap **“Join team sync — sign in with Google”** on the home screen
+  (once per device). After that it syncs automatically in the background — everyone sees the same venues
+  update live.
 
 ### Notes
 - The Firebase config is **not a secret** (it's public in every web app); the security rules are what

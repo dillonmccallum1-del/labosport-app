@@ -16,6 +16,9 @@
   function load(){ try{ return Object.assign({config:null,enabled:false}, JSON.parse(localStorage.getItem(CFG_KEY)||'{}')); }catch(e){ return {config:null,enabled:false}; } }
   function saveCfg(){ try{ localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); }catch(e){} }
   function status(m,k){ hooks.onStatus(m,k); }
+  // config baked into the app (firebase-config.js) — used automatically so teammates never paste it
+  function embedded(){ const c=(typeof window!=='undefined')&&window.LABOSPORT_FB_CONFIG; return (c&&c.projectId)?c:null; }
+  function activeConfig(){ return cfg.config || embedded(); }
   function fbReady(){ return typeof firebase!=='undefined' && firebase.firestore && firebase.auth; }
 
   // venue doc to store in Firestore: drop photos (size) + brief images + transient _ts
@@ -24,9 +27,10 @@
 
   function init(){
     if(app) return true;
-    if(!fbReady()||!cfg.config) return false;
+    const conf=activeConfig();
+    if(!fbReady()||!conf) return false;
     try{
-      app=firebase.initializeApp(cfg.config);
+      app=firebase.initializeApp(conf);
       auth=firebase.auth(); db=firebase.firestore();
       db.enablePersistence({synchronizeTabs:true}).catch(()=>{});   // offline cache
       auth.onAuthStateChanged(u=>{
@@ -72,7 +76,7 @@
   }
 
   function connect(){
-    if(!cfg.config){ status('Paste your Firebase config first','warn'); return; }
+    if(!activeConfig()){ status('Paste your Firebase config first','warn'); return; }
     if(!init()){ status('Firebase still loading — try again in a moment','warn'); return; }
     status('<span class="spin"></span> Signing in to Google…','info');
     const prov=new firebase.auth.GoogleAuthProvider();
@@ -82,14 +86,18 @@
     });
   }
   function disconnect(){ try{ if(auth) auth.signOut(); }catch(e){} cfg.enabled=false; saveCfg(); status('Disconnected from team sync','muted'); }
-  function autoStart(){ if(!cfg.enabled||!cfg.config) return; let n=0; (function wait(){ if(fbReady()){ init(); } else if(n++<60){ setTimeout(wait,150); } })(); }
+  // auto-init when there's any config (baked-in or saved). Firebase Auth persists the session,
+  // so after the first sign-in this silently restores it and resumes background sync.
+  function autoStart(){ if(!activeConfig()) return; let n=0; (function wait(){ if(fbReady()){ init(); } else if(n++<60){ setTimeout(wait,150); } })(); }
 
   window.FB={
     configure(h){ hooks=Object.assign(hooks,h); },
     setConfig(text){ const c=parseConfig(text); if(!c||!c.projectId){ status('⚠ That doesn’t look like a Firebase config','warn'); return false; } cfg.config=c; saveCfg(); return true; },
-    getConfigText(){ return cfg.config?JSON.stringify(cfg.config,null,2):''; },
-    hasConfig(){ return !!cfg.config; },
-    isEnabled(){ return !!cfg.enabled; },
+    getConfigText(){ const c=activeConfig(); return c?JSON.stringify(c,null,2):''; },
+    hasConfig(){ return !!activeConfig(); },
+    usingEmbedded(){ return !cfg.config && !!embedded(); },
+    isEnabled(){ return !!cfg.enabled || !!embedded(); },
+    isConfigured(){ return !!activeConfig(); },
     isSignedIn(){ return !!user; },
     userEmail(){ return user?(user.email||user.uid):''; },
     connect, disconnect, schedulePush, autoStart, markSeen,

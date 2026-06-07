@@ -290,7 +290,11 @@ function scrHome(){
       <div class="pbar"><div class="pfill" style="width:${prog}%"></div></div>
       <div class="pmeta"><span>${v.pitches.length} pitch${v.pitches.length>1?'es':''} · ${venueProgress(v)}% tested</span><span>${esc(v.cluster||'')}</span></div></div></div>`;
   }).join('');
-  return `<div class="note"><b>Data collection.</b> Everything you enter saves to this device automatically and works offline. Word/PDF reports that match your template come in the next update.</div>
+  const teamPrompt=(window.FB&&FB.isConfigured()&&!FB.isSignedIn())
+    ? `<div class="note af" style="display:flex;align-items:center;gap:10px;justify-content:space-between"><span><b>Team sync is set up.</b> Sign in once to share data live with your team.</span></div>
+       <button class="btn primary" id="joinTeam">👥 Join team sync — sign in with Google</button>` : '';
+  return `<div class="note"><b>Data collection.</b> Everything you enter saves to this device automatically and works offline.</div>
+    ${teamPrompt}
     <h2 class="sec">Venues</h2>${cards}
     <button class="btn dash" id="uploadBrief">⤓ Upload pitch brief (PDF) → autofill</button>
     <button class="btn ghost" id="addVenue">+ Add venue manually</button>`;
@@ -606,6 +610,7 @@ function bind(){
   app.querySelectorAll('[data-pitch]').forEach(e=>e.onclick=()=>{CURP=+e.dataset.pitch;render();});
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
 
+  if($('joinTeam'))$('joinTeam').onclick=()=>{ if(window.FB) FB.connect(); };
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
   if($('addVenue'))$('addVenue').onclick=addVenueManual;
   app.querySelectorAll('[data-edit-venue]').forEach(e=>e.onclick=editVenue);
