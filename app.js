@@ -292,7 +292,8 @@ function scrHome(){
   }).join('');
   const teamPrompt=(window.FB&&FB.isConfigured()&&!FB.isSignedIn())
     ? `<div class="note af" style="display:flex;align-items:center;gap:10px;justify-content:space-between"><span><b>Team sync is set up.</b> Sign in once to share data live with your team.</span></div>
-       <button class="btn primary" id="joinTeam">👥 Join team sync — sign in with Google</button>` : '';
+       <button class="btn primary" id="joinTeam">👥 Join team sync — sign in with Google</button>
+       <button class="btn ghost" id="joinTeamEmail" style="margin-top:-4px">No Google account? Sign in with email</button>` : '';
   return `<div class="note"><b>Data collection.</b> Everything you enter saves to this device automatically and works offline.</div>
     ${teamPrompt}
     <h2 class="sec">Venues</h2>${cards}
@@ -527,16 +528,26 @@ function scrSettings(){
       : `<button class="btn primary" id="driveConn">Connect Google Drive</button>`}
     <div class="hint">Creates a “Labosport Pitch Inspector” folder in your Drive and keeps <b>labosport_data.json</b> in sync. Setup steps are in the README. The Client ID is not secret.</div>`;
   // ---- team sync (Firebase) ----
-  const fbOn=window.FB&&FB.isSignedIn(), fbHas=window.FB&&FB.hasConfig();
-  const fbStat= !window.FB?'Module not loaded' : (!fbHas?'Not set up — paste your Firebase config below' : (fbOn?('Team sync on · '+esc(FB.userEmail())):'Config saved — tap Connect'));
+  const fbOn=window.FB&&FB.isSignedIn(), fbHas=window.FB&&FB.hasConfig(), fbEmbed=window.FB&&FB.usingEmbedded();
+  const fbStat= !window.FB?'Module not loaded' : (!fbHas?'Not set up — paste your Firebase config below' : (fbOn?('Team sync on · '+esc(FB.userEmail())):'Sign in to start syncing'));
+  const configBox = fbEmbed
+    ? `<div class="hint" style="color:var(--green-d)">✓ Team sync is configured for your team — just sign in below.</div>`
+    : `<div class="card"><div class="field"><label>Firebase web config (paste from Firebase console)</label>
+        <textarea id="fbConfig" placeholder='{ "apiKey": "…", "authDomain": "…", "projectId": "…", … }' autocapitalize="off" spellcheck="false" style="min-height:96px;font-size:12px">${window.FB?esc(FB.getConfigText()):''}</textarea></div></div>`;
+  const signinBox = fbOn
+    ? `<div class="hint">Signed in as <b>${esc(FB.userEmail())}</b></div><button class="btn ghost" id="fbSignout">Sign out of team sync</button>`
+    : `<button class="btn primary" id="fbConnect">Sign in with Google</button>
+       <div class="hint" style="text-align:center;margin:4px 0">— or use any email —</div>
+       <div class="card">
+         <div class="field"><label>Email</label><input id="fbEmail" type="email" inputmode="email" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="you@example.com"></div>
+         <div class="field"><label>Password (set one on first use · min 6 characters)</label><input id="fbPass" type="password" placeholder="••••••"></div>
+       </div>
+       <button class="btn primary" id="fbEmailConnect">Sign in with email</button>`;
   const team=`<h2 class="sec">Team sync (Firebase) — live</h2>
     <div class="hint" id="fbStatus">${fbStat}</div>
-    <div class="card"><div class="field"><label>Firebase web config (paste from Firebase console)</label>
-      <textarea id="fbConfig" placeholder='{ "apiKey": "…", "authDomain": "…", "projectId": "…", … }' autocapitalize="off" spellcheck="false" style="min-height:96px;font-size:12px">${window.FB?esc(FB.getConfigText()):''}</textarea></div></div>
-    ${fbOn
-      ? `<button class="btn ghost" id="fbSignout">Sign out of team sync</button>`
-      : `<button class="btn primary" id="fbConnect">Connect team sync (Google sign-in)</button>`}
-    <div class="hint">Everyone you authorise shares the same live venue data (measurements, audit, notes). Photos stay on each device — share those via “Publish to Drive”. Setup &amp; security rules are in the README.</div>`;
+    ${configBox}
+    ${signinBox}
+    <div class="hint">Everyone you authorise shares the same live venue data (measurements, audit, notes). Photos stay on each device — share those via “Publish to Drive”. Your email must be on the team allowlist (see README).</div>`;
   return `<h2 class="sec">Inspector</h2>
     <div class="card"><div class="field"><label>Your name (appears on exports) <span class="saved" id="savedFlag">saved ✓</span></label><input id="testerName" value="${esc(state.tester||'')}" placeholder="e.g. Dillon McCallum"></div></div>
     ${team}
@@ -611,6 +622,7 @@ function bind(){
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
 
   if($('joinTeam'))$('joinTeam').onclick=()=>{ if(window.FB) FB.connect(); };
+  if($('joinTeamEmail'))$('joinTeamEmail').onclick=()=>go('settings');
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
   if($('addVenue'))$('addVenue').onclick=addVenueManual;
   app.querySelectorAll('[data-edit-venue]').forEach(e=>e.onclick=editVenue);
@@ -676,7 +688,8 @@ function bind(){
   if($('cidInput'))$('cidInput').onchange=()=>{ GDrive.setClientId($('cidInput').value); render(); };
   if($('autoSeg'))$('autoSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ GDrive.setAutoSync(b.dataset.v==='1'); $('autoSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b)); });
   if($('fbConfig'))$('fbConfig').onchange=()=>{ if(window.FB){ if(FB.setConfig($('fbConfig').value)) toast('Firebase config saved'); } };
-  if($('fbConnect'))$('fbConnect').onclick=()=>{ if(window.FB){ FB.setConfig($('fbConfig').value); FB.connect(); } };
+  if($('fbConnect'))$('fbConnect').onclick=()=>{ if(window.FB){ if($('fbConfig')) FB.setConfig($('fbConfig').value); FB.connect(); } };
+  if($('fbEmailConnect'))$('fbEmailConnect').onclick=()=>{ if(window.FB){ if($('fbConfig')) FB.setConfig($('fbConfig').value); FB.connectEmail($('fbEmail')?$('fbEmail').value:'', $('fbPass')?$('fbPass').value:''); } };
   if($('fbSignout'))$('fbSignout').onclick=()=>{ if(window.FB){ FB.disconnect(); render(); } };
   if($('driveConn'))$('driveConn').onclick=()=>{ GDrive.setClientId($('cidInput').value); GDrive.connect().then(()=>render()); };
   if($('driveDisc'))$('driveDisc').onclick=()=>{ GDrive.disconnect(); render(); };

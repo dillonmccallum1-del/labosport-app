@@ -135,6 +135,9 @@ Per-venue conflicts use last-edit-wins, and each venue records who last changed 
 1. In the **Firebase console** (https://console.firebase.google.com) create a project (or use an existing one).
 2. **Firestore Database** → *Create database* → Production mode → pick a location.
 3. **Build → Authentication** → *Get started* → **Sign-in method** → enable **Google**.
+   Also enable **Email/Password** here if any teammate doesn't have / want a Google account — they can
+   then sign in with their own email + a password (set on first use). The email allowlist works the same
+   either way.
 4. **Authentication → Settings → Authorized domains** → *Add domain* → your app's address (your
    GitHub Pages domain, e.g. `YOURNAME.github.io`). Required for sign-in to work.
 5. **Project settings (gear) → General → Your apps** → add a **Web app** (`</>`). Copy the

@@ -85,6 +85,31 @@
       status('⚠ Sign-in failed: '+(e.message||e.code||e),'warn');
     });
   }
+  // email + password sign-in (works for any email; no Google account needed).
+  // single flow: try to sign in, and if the account doesn't exist yet, create it.
+  async function connectEmail(email,pw){
+    email=(email||'').trim();
+    if(!email||!pw){ status('Enter your email and a password','warn'); return; }
+    if(pw.length<6){ status('Password must be at least 6 characters','warn'); return; }
+    if(!activeConfig()){ status('Team sync isn’t configured yet','warn'); return; }
+    if(!init()){ status('Firebase still loading — try again in a moment','warn'); return; }
+    status('<span class="spin"></span> Signing in…','info');
+    try{ await auth.signInWithEmailAndPassword(email,pw); }
+    catch(e){
+      const code=e&&e.code||'';
+      if(/user-not-found|invalid-credential|invalid-login/.test(code)){
+        try{ await auth.createUserWithEmailAndPassword(email,pw); }     // first time -> create the account
+        catch(e2){ const c2=e2&&e2.code||'';
+          if(/email-already-in-use|invalid-credential/.test(c2)) status('⚠ Wrong password for that email','warn');
+          else if(/weak-password/.test(c2)) status('⚠ Password too short (min 6 characters)','warn');
+          else if(/operation-not-allowed/.test(c2)) status('⚠ Enable Email/Password sign-in in Firebase first','warn');
+          else status('⚠ Sign-in failed: '+(e2.message||c2),'warn');
+          return; }
+      } else if(/operation-not-allowed/.test(code)){ status('⚠ Enable Email/Password sign-in in Firebase first','warn'); return; }
+      else { status('⚠ Sign-in failed: '+(e.message||code),'warn'); return; }
+    }
+    // onAuthStateChanged takes it from here
+  }
   function disconnect(){ try{ if(auth) auth.signOut(); }catch(e){} cfg.enabled=false; saveCfg(); status('Disconnected from team sync','muted'); }
   // auto-init when there's any config (baked-in or saved). Firebase Auth persists the session,
   // so after the first sign-in this silently restores it and resumes background sync.
@@ -100,7 +125,7 @@
     isConfigured(){ return !!activeConfig(); },
     isSignedIn(){ return !!user; },
     userEmail(){ return user?(user.email||user.uid):''; },
-    connect, disconnect, schedulePush, autoStart, markSeen,
+    connect, connectEmail, disconnect, schedulePush, autoStart, markSeen,
     syncNow(){ pushChanges(); }
   };
 })();
