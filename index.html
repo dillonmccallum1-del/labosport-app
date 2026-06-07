@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Labosport Pitch Inspector</title>
+<meta name="theme-color" content="#28282A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Pitch Inspector">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="phone">
+  <div class="bar">
+    <button class="icon" id="backBtn" style="display:none">‹</button>
+    <img id="barLogo" src="icons/logo-white.png" alt="Labosport">
+    <div class="title" id="barTitle">Labosport Pitch Inspector<span class="sub" id="barSub"></span></div>
+    <button class="icon" id="settingsBtn" title="Data & settings">⚙</button>
+  </div>
+
+  <div class="scroll"><div id="app"></div></div>
+
+  <div class="tabbar" id="tabbar">
+    <button data-tab="home"><span class="ti">▤</span>Venues</button>
+    <button data-tab="benchmark"><span class="ti">⚖</span>Benchmark</button>
+    <button data-tab="settings"><span class="ti">⚙</span>Data</button>
+  </div>
+</div>
+
+<input type="file" id="pdfInput" accept="application/pdf" style="display:none">
+<input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
+<input type="file" id="photoLibInput" accept="image/*" multiple style="display:none">
+<input type="file" id="importInput" accept="application/json,.json" style="display:none">
+<div class="toast" id="toast"></div>
+
+<!-- pdf.js for brief parsing (cached for offline by the service worker after first online load) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- report generation (bundled locally so it works fully offline) -->
+<script src="libs/pizzip.min.js"></script>
+<script src="libs/docxtemplater.min.js"></script>
+<script src="libs/imagemodule.js"></script>
+<script src="mergeDocx.js"></script>
+<!-- Google sign-in for Drive sync (must load live; not cached) -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="briefParser.js"></script>
+<script src="seedImages.js"></script>
+<script src="gdrive.js"></script>
+<!-- Firebase (compat build, global `firebase`) for live team sync -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="firebase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

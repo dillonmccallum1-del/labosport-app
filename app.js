@@ -1,0 +1,1038 @@
+/* Labosport Pitch Inspector — data collection app (v1)
+   Data-collection pass: real entry, on-device persistence, brief autofill, CSV/JSON export.
+   Word/PDF report generation (exact template) is the next pass. */
+'use strict';
+
+/* ----------------------------- definitions ----------------------------- */
+const TESTS = [
+  {key:'turf_cover', name:'Turf cover',                   n:3,  unit:'%',    pri:false},
+  {key:'weed',       name:'Weed content',                 n:3,  unit:'%',    pri:false},
+  {key:'turf_height',name:'Turf height',                  n:3,  unit:'mm',   pri:false},
+  {key:'infil',      name:'Infiltration rate',            n:3,  unit:'mm/h', pri:false},
+  {key:'soil',       name:'Soil properties',              n:3,  unit:'',     pri:false, note:'Record sample observations / send for lab analysis'},
+  {key:'shear',      name:'Root zone shear strength',     n:6,  unit:'Nm',   pri:false},
+  {key:'ndvi',       name:'Turf health (NDVI)',           n:12, unit:'',     pri:false},
+  {key:'clegg',      name:'Clegg impact (compaction)',    n:12, unit:'g',    pri:true},
+  {key:'traction',   name:'Surface traction / 19 mm stud',n:12, unit:'Nm',   pri:true},
+  {key:'moisture',   name:'Soil moisture content',        n:12, unit:'%',    pri:true},
+];
+const TKEY = Object.fromEntries(TESTS.map(t=>[t.key,t]));
+
+// audit sections A-H: [code, title, hint, briefParam, fields]
+const YN = 'yn', TXT='text', AREA='area', NUM='num';
+const AUDIT = [
+  ['A','Field background','Staffing, sports, levels, games & sessions','Field usage',
+    [['Number of grounds staff',TXT],['Sports played on the field',TXT],['Levels of play',TXT],['Games per year',TXT],['Practice sessions per year',TXT]]],
+  ['B','Pitch dimensions, design & construction','Area, reinforcement, slope, levelness','Pitch dimensions',
+    [['Full playing surface area',TXT],['Reinforcement installed?',YN],['Reinforcement details',TXT],['Slope / gradient shape',TXT],['Levelness assessment',TXT]]],
+  ['C','Performance, irrigation & water','Irrigation system, source, quality, perf. data','Irrigation and Water management',
+    [['Pop-up irrigation present?',YN],['Number of sprinkler heads',TXT],['Water supply source',TXT],['Water quality',TXT],['Performance data collected?',YN],['Performance data details',AREA]]],
+  ['D','Drainage & waterlogging','Ponding, duration, closures','Drainage & Waterlogging Performance',
+    [['Ponding / squelchy conditions?',YN],['Typical duration after heavy rain',TXT],['Occurrences per year',TXT],['Avg closure days per season (wet)',TXT]]],
+  ['E','Grass type, growth & seasonal','Species, disease / disorder','Soil profile',
+    [['Grass species / turf type(s)',TXT],['Disease or disorder identified?',YN],['Disease / disorder details',AREA]]],
+  ['F','Turf management resources','Equipment inventory','Resources',
+    [['Tractor',YN],['Cylinder mower',YN],['Pedestrian rotary mower',YN],['Aerator (tractor / pedestrian)',YN],['Boom sprayer',YN],['Top dresser',YN],['Line marker',YN],['Over-seeder / dimple-seeder',YN],['Drag mat / brush',YN]]],
+  ['G','Maintenance operations','Fertilizer, herbicide, other','Additional aspects',
+    [['Fertilizer applications/yr (type & rate)',AREA],['Herbicide applications per year',TXT],['Other turf management activities',AREA]]],
+  ['H','Other risks','Playability risks & comments','Safety',
+    [['Additional playability risks',AREA],['General comments on surface / maintenance',AREA]]],
+];
+
+const RISK = [
+  ['field_usage','Field usage'],['pitch_dim','Pitch dimensions'],['soil','Soil profile'],
+  ['irrigation','Irrigation & water management'],['drainage','Drainage & waterlogging'],
+  ['surface','Surface performance'],['safety','Safety'],['turf_mgmt','Turf management skills'],
+  ['resources','Resources'],['additional','Additional aspects'],
+];
+const RLABEL = {1:'Low',2:'Moderate',3:'High',4:'Critical'};
+
+/* ----------------------------- seed data (from the two Charlotte briefs) ----------------------------- */
+const SEED = [
+  {name:'Mecklenburg County Sportsplex', alias:'Matthews Sportsplex',
+   address:'2425 Sports Pkwy, Matthews, NC 28105', contact:'Jonathan Waszak',
+   position:'Sports Field & Grounds Manager', email:'Jonathan.waszak@mecknc.gov', phone:'980-215-2220',
+   grass:'Tifway 419 Bermudagrass, winter-overseeded with perennial ryegrass',
+   venueComment:'No specific additional risks at present. Surface is ~10 years old; full renovation planned within 1–2 years.',
+   wr:'Test both the stadium pitch and the back pitch. Privately run public park with its own grounds team.',
+   pitchNames:['Stadium pitch','Back pitch'],
+   params:{
+     'Field usage':'30–50 games and 0–15 practice sessions. Football, soccer, lacrosse and rugby across youth, community, club/collegiate and elite levels.',
+     'Pitch dimensions':'108,900 sq ft. Crowned profile; no reinforcement system installed.',
+     'Soil profile':'Sand top-dressed annually. Tifway 419 Bermuda + winter ryegrass overseed. Soil sampled twice per year.',
+     'Irrigation and Water management':'52 sprinkler heads; city water (above-average quality). Moisture monitored via SGL TurfPods.',
+     'Drainage & Waterlogging Performance':'Drainage efficiency excellent. Ponding occurs but typically <1 hr, ~2–3 events/yr.',
+     'Surface Performance':'Surface performance, slope/gradient and levelness all rated good. Performance data = moisture via SGL TurfPods.',
+     'Safety':'No specific safety concerns. Preventative fungicide programme in place.',
+     'Turf Management Skills':'Previous experience hosting elite teams. Led by Jonathan Waszak, supported by a staff of 5.',
+     'Resources':'Tractor, cylinder & rotary mowers, fertilizer spreader, pedestrian & tractor aerators, line marker, top dresser, boom sprayer, drag mat. Topdressing 2×/yr (100–150 t sand), verticut 3–4×/yr, deep tine + core aeration, rolling after aeration.',
+     'Additional aspects':'~10 yrs old, renovation in 1–2 yrs. Herbicide ~2–3 applications/yr (more if pre-emergent needed).'
+   }},
+  {name:'Ramblewood Soccer Complex', alias:'',
+   address:'10200 Nations Ford Rd, Charlotte, NC 28273', contact:'Steve Elliott',
+   position:'Athletic Coordinator', email:'steven.elliott@mecklenburgcountync.gov', phone:'980-314-1196',
+   grass:'Bermuda',
+   venueComment:'Fields do close due to rain; fields are at varying sizes.',
+   wr:'11 pitches on site (parks & rec facility). Suggest testing 2. Top-3 preference marked on the map (blue=1st, yellow=2nd, green=3rd) — open to agronomist’s opinion.',
+   pitchNames:['Pitch — 1st choice (blue)','Pitch — 2nd choice (yellow)'],
+   params:{
+     'Field usage':'>100 games and >100 practice sessions; recreational / community use.',
+     'Pitch dimensions':'11 fields of varying dimensions.',
+     'Soil profile':'No annual soil/sand top dressing; no reinforcement system; slope/gradient not provided.',
+     'Irrigation and Water management':'No sprinkler heads; water supply source not provided.',
+     'Drainage & Waterlogging Performance':'Drainage efficiency good. Ponding/waterlogging typically 6–24 hr, ~10–15 events/yr.',
+     'Surface Performance':'Surface performance average; slope/gradient average; levelness good; performance data not collected.',
+     'Safety':'Additional risk to playability: weather.',
+     'Turf Management Skills':'Herbicide 1–2/yr. Reseeding/resodding as needed; off-seasons for regrowth. Previous experience hosting elite teams: yes.',
+     'Resources':'No staff dedicated to the park. Equipment: pedestrian aerator, tractor, line marker (roller/spray), other. Fertilizer applications: unsure.',
+     'Additional aspects':'Sports: soccer, lacrosse, rugby, other. Disease/insect/disorder issues: no.'
+   }},
+];
+
+/* ----------------------------- state / persistence ----------------------------- */
+const LSKEY='labosport_v1';
+let state=null, CUR=null, CURP=0;
+
+function uid(){return 'id'+Math.random().toString(36).slice(2,9);}
+function newPitch(name){
+  const tests={}; TESTS.forEach(t=>tests[t.key]={values:Array(t.n).fill(null),comment:'',method:''});
+  const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
+  const risk={}; RISK.forEach(r=>risk[r[0]]=0);
+  return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},photos:[],photoNotes:''};
+}
+function venueFromSeed(s){
+  const v={id:uid(),name:s.name,alias:s.alias,address:s.address,contact:s.contact,position:s.position,
+    email:s.email,phone:s.phone,grass:s.grass,cluster:'Charlotte',wr:s.wr,venueComment:s.venueComment,
+    params:s.params||{},briefLoaded:true,
+    briefImages:s.briefImages||((window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[s.name])||[]),pitches:[]};
+  (s.pitchNames||['Pitch 1']).forEach(pn=>{const p=newPitch(pn);
+    // pre-fill each audit section's brief text from params
+    AUDIT.forEach(sec=>{const txt=v.params[sec[3]]||''; if(txt) p.audit[sec[0]].brief=txt;});
+    v.pitches.push(p);});
+  extractAuditFields(v);
+  return v;
+}
+function venueFromParsed(pv){
+  const s={...pv, pitchNames: pv.pitches&&pv.pitches.length?pv.pitches:['Pitch 1']};
+  return venueFromSeed(s);
+}
+
+/* ---- pull structured audit-field values out of a brief's parameter text ---- */
+function mtext(s,re,g){ const m=(s||'').match(re); return m?String(g?m[g]:m[0]).trim():''; }
+function equipmentExtractors(){
+  const map={'Tractor':/\btractor\b/i,'Cylinder mower':/cylinder mower/i,'Pedestrian rotary mower':/rotary mower/i,
+    'Aerator (tractor / pedestrian)':/aerat/i,'Boom sprayer':/boom sprayer/i,'Top dresser':/top ?dress/i,
+    'Line marker':/line marker/i,'Over-seeder / dimple-seeder':/over-?seeder|dimple/i,'Drag mat / brush':/drag ?mat|brush/i};
+  const out={}; Object.keys(map).forEach(k=>{ out[k]=(P)=> map[k].test(P['Resources']||'')?'Yes':''; }); return out;
+}
+const AUDIT_EXTRACT={
+  A:{
+    'Number of grounds staff':(P)=>{const s=(P['Turf Management Skills']||'')+' '+(P['Resources']||''); if(/no staff dedicated/i.test(s))return 'None dedicated'; return mtext(s,/staff of (\d+)/i,1)||mtext(s,/(\d+)\s+grounds?\s*staff/i,1);},
+    'Sports played on the field':(P)=>mtext(P['Field usage'],/supports? ([^.]+?)(?:\s+across|\.)/i,1)||mtext((P['Additional aspects']||'')+' '+(P['Field usage']||''),/Sports(?: played)?:?\s*([^.]+)/i,1)||mtext(P['Field usage'],/([A-Za-z]+(?:,\s*[A-Za-z]+)+\s+and\s+[A-Za-z]+)\s+across/i,1),
+    'Levels of play':(P)=>mtext(P['Field usage'],/across ([^.]*levels)/i,1)||mtext(P['Field usage'],/(youth[^.]*elite[^.]*)/i,1),
+    'Games per year':(P)=>mtext(P['Field usage'],/((?:>|more than\s*)?\s*[\d,]+(?:\s*(?:to|–|-)\s*[\d,]+)?)\s*games/i,1),
+    'Practice sessions per year':(P)=>mtext(P['Field usage'],/((?:>|more than\s*)?\s*[\d,]+(?:\s*(?:to|–|-)\s*[\d,]+)?)\s*practice sessions/i,1),
+  },
+  B:{
+    'Full playing surface area':(P)=>mtext(P['Pitch dimensions'],/([\d,]+(?:\.\d+)?\s*(?:sq\.?\s*ft|square feet|m²|m2|sqm|acres))/i,1),
+    'Reinforcement installed?':(P)=>{const s=P['Pitch dimensions']||''; if(/no reinforcement/i.test(s))return 'No'; if(/reinforcement (system )?installed|reinforced/i.test(s))return 'Yes'; return '';},
+    'Slope / gradient shape':(P)=>mtext(P['Pitch dimensions'],/(crowned|flat|sloped|domed|graded)/i,1),
+    'Levelness assessment':(P)=>mtext(P['Surface Performance'],/levelness[^.]*?(good|average|poor|excellent|fair)/i,1),
+  },
+  C:{
+    'Pop-up irrigation present?':(P)=>{const s=P['Irrigation and Water management']||''; if(/no sprinkler heads|no irrigation/i.test(s))return 'No'; if(/\d+\s*sprinkler heads|pop-?up|irrigation/i.test(s))return 'Yes'; return '';},
+    'Number of sprinkler heads':(P)=>mtext(P['Irrigation and Water management'],/(\d+)\s*sprinkler heads/i,1),
+    'Water supply source':(P)=>{const s=P['Irrigation and Water management']||''; if(/not provided/i.test(s))return ''; return mtext(s,/(city water|mains water|well water|reclaimed water|pond|borehole|river)/i,1);},
+    'Water quality':(P)=>mtext(P['Irrigation and Water management'],/(above[- ]average|below[- ]average|average|good|poor|excellent)[- ]?quality/i,1),
+    'Performance data collected?':(P)=>{const s=(P['Surface Performance']||'')+' '+(P['Irrigation and Water management']||''); if(/not collected/i.test(s))return 'No'; if(/data collected|moisture readings|turfpods/i.test(s))return 'Yes'; return '';},
+  },
+  D:{
+    'Ponding / squelchy conditions?':(P)=>{const s=P['Drainage & Waterlogging Performance']||''; if(/no ponding|no waterlog/i.test(s))return 'No'; if(/ponding|waterlog|squelch/i.test(s))return 'Yes'; return '';},
+    'Typical duration after heavy rain':(P)=>mtext(P['Drainage & Waterlogging Performance'],/(less than\s*\d+\s*\w+|<\s*\d+\s*\w+|\d+\s*h(?:ours?|r)?\s*(?:to|–|-)\s*\d+\s*h(?:ours?|r)?|\d+\s*[-–]\s*\d+\s*hrs?)/i,1),
+    'Occurrences per year':(P)=>mtext(P['Drainage & Waterlogging Performance'],/([\d]+(?:\s*(?:to|–|-)\s*[\d]+)?)\s*(?:events|occurrences)/i,1),
+  },
+  E:{
+    'Grass species / turf type(s)':(P,v)=>v.grass||mtext(P['Soil profile'],/(Tifway[^.,]*|Bermuda[^.,]*|ryegrass[^.,]*|Kikuyu[^.,]*|Zoysia[^.,]*)/i,1),
+    'Disease or disorder identified?':(P)=>{const s=(P['Additional aspects']||'')+' '+(P['Safety']||''); if(/issues:\s*no|no disease|no disorder|disorder issues:\s*no/i.test(s))return 'No'; return '';},
+  },
+  F: equipmentExtractors(),
+  G:{
+    'Fertilizer applications/yr (type & rate)':(P)=>{const s=(P['Resources']||'')+' '+(P['Additional aspects']||''); return mtext(s,/(multiple (?:granular|foliar)[^.]*fertili[sz]er applications[^.]*)/i,1)||mtext(s,/Fertilizer applications?:?\s*([^.]+)/i,1);},
+    'Herbicide applications per year':(P)=>{const s=(P['Additional aspects']||'')+' '+(P['Turf Management Skills']||'')+' '+(P['Safety']||''); return mtext(s,/herbicide[^.\d]*((?:>|more than\s*)?\d+(?:\s*(?:to|–|-)\s*\d+)?)/i,1);},
+    'Other turf management activities':(P)=>mtext(P['Turf Management Skills'],/activities:?\s*([^.]+)/i,1)||mtext(P['Resources'],/(verticut[^.]*|topdressing[^.]*|aerifi[^.]*)/i,1),
+  },
+  H:{
+    'Additional playability risks':(P)=>mtext(P['Safety'],/risk to playability:?\s*([^.]+)/i,1)||mtext(P['Safety'],/(weather|drought|shade|wear)/i,1),
+    'General comments on surface / maintenance':(P,v)=>v.venueComment||'',
+  },
+};
+function extractAuditFields(v){
+  if(!v||!v.params) return;
+  v.pitches.forEach(p=>{
+    AUDIT.forEach(sec=>{ const code=sec[0], ex=AUDIT_EXTRACT[code]||{}, fields=p.audit[code].fields;
+      Object.keys(ex).forEach(label=>{
+        if(fields[label]&&String(fields[label]).trim()) return;   // never clobber existing/edited values
+        let val=''; try{ val=ex[label](v.params,v)||''; }catch(e){}
+        if(val) fields[label]=String(val).trim();
+      });
+    });
+  });
+}
+function freshState(){ return {version:1, tester:'', updatedAt:Date.now(), venues:SEED.map(venueFromSeed),
+  benchmark:{benchId:'',rationale:'',comparisons:{}}}; }
+function load(){
+  try{const raw=localStorage.getItem(LSKEY); if(raw){state=JSON.parse(raw); if(!state.updatedAt)state.updatedAt=Date.now();
+    try{ (state.venues||[]).forEach(v=>{ extractAuditFields(v);
+      if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name]; }); }catch(e){}   // backfill brief fields + images
+    return;}}catch(e){}
+  state=freshState(); save();
+}
+let saveTimer=null;
+function save(flash,opts){
+  opts=opts||{};
+  if(!opts.keepStamp) state.updatedAt=Date.now();
+  try{ localStorage.setItem(LSKEY, JSON.stringify(state));
+    if(flash){const s=document.getElementById('savedFlag'); if(s){s.classList.add('show'); clearTimeout(saveTimer); saveTimer=setTimeout(()=>s.classList.remove('show'),900);} }
+  }catch(e){ toast('⚠ Storage full — export a backup and remove some photos'); }
+  if(!opts.noSync && window.GDrive && GDrive.isConnected()) GDrive.schedulePush();
+  if(!opts.noFB && window.FB && FB.isEnabled()) FB.schedulePush();
+}
+/* ---- incoming team-sync changes from Firestore (merge, preserving local photos) ---- */
+const ENTRY_ROUTES=/^(test:|audit:|overall|risk|venueform|photos)/;
+function applyRemoteVenue(remote){
+  if(!remote||!remote.id) return;
+  const i=state.venues.findIndex(x=>x.id===remote.id), local=i>=0?state.venues[i]:null;
+  if(local && (local._ts||0) >= (remote._ts||0)) return;       // ours is newer/equal
+  // preserve local photos & brief images (not carried in the team DB)
+  remote.briefImages = (local&&local.briefImages)?local.briefImages:(remote.briefImages||[]);
+  (remote.pitches||[]).forEach(rp=>{ const lp=local&&(local.pitches||[]).find(x=>x.id===rp.id); rp.photos=(lp&&lp.photos)?lp.photos:(rp.photos||[]); });
+  if(i>=0) state.venues[i]=remote; else state.venues.push(remote);
+  if(window.FB) FB.markSeen(remote);
+  save(false,{keepStamp:true,noSync:true,noFB:true});
+  if(!ENTRY_ROUTES.test(cur())) render();                       // don't yank focus while entering data
+  else toast('Team update received for “'+remote.name+'”');
+}
+function removeRemoteVenue(id){
+  const i=state.venues.findIndex(x=>x.id===id); if(i<0) return;
+  const nm=state.venues[i].name; state.venues.splice(i,1);
+  if(CUR===id){ CUR=null; stack=['home']; }
+  save(false,{keepStamp:true,noSync:true,noFB:true});
+  if(!ENTRY_ROUTES.test(cur())) render();
+  toast('“'+nm+'” was removed by a teammate');
+}
+function venue(){return state.venues.find(v=>v.id===CUR);}
+function pitch(){const v=venue(); return v?v.pitches[CURP]:null;}
+
+/* ----------------------------- helpers ----------------------------- */
+const $=id=>document.getElementById(id);
+const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(m){const t=$('toast');t.innerHTML=m;t.classList.add('show');clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),2400);}
+function stats(values){
+  const nums=values.filter(v=>typeof v==='number'&&!isNaN(v));
+  if(!nums.length) return {n:0,avg:null,varPct:null,done:0};
+  const avg=nums.reduce((a,b)=>a+b,0)/nums.length;
+  const maxDev=Math.max(...nums.map(v=>Math.abs(v-avg)));
+  const varPct=avg!==0?Math.round(maxDev/Math.abs(avg)*100):null;
+  return {n:nums.length,avg,varPct,done:nums.length};
+}
+function fmt(n,unit){ if(n==null) return '—'; const r=Math.abs(n)>=10?Math.round(n):Math.round(n*100)/100; return r+(unit?(' '+unit):''); }
+function shortNum(v){ return String(Math.abs(v)>=10?Math.round(v):Math.round(v*100)/100); }       // compact label for a map dot
+function dotFontSVG(lbl){ const L=String(lbl).length; return L<=2?9:(L===3?7.4:6.2); }
+
+/* ----------------------------- router ----------------------------- */
+const TOP=['home','benchmark','settings'];
+let stack=['home'];
+function go(route,push){ if(push)stack.push(route); else if(TOP.includes(route))stack=[route]; else if(stack[stack.length-1]!==route)stack.push(route); render(); }
+function back(){ if(stack.length>1){stack.pop(); render();} }
+function goReplace(route){ stack[stack.length-1]=route; render(); }
+function cur(){return stack[stack.length-1];}
+
+function render(){
+  const r=cur(); const app=$('app');
+  let title='Labosport Pitch Inspector', sub='';
+  const onHome=(r==='home');
+  if(r==='home'){ app.innerHTML=scrHome(); }
+  else if(r==='venue'){ const v=venue(); title=v.name; sub=v.pitches[CURP]?v.pitches[CURP].name:''; app.innerHTML=scrVenue(); }
+  else if(r.startsWith('audit:')){ const s=AUDIT.find(a=>a[0]===r.split(':')[1]); title=s[0]+'. '+s[1]; sub='Venue audit'; app.innerHTML=scrAudit(r.split(':')[1]); }
+  else if(r.startsWith('test:')){ const t=TKEY[r.split(':')[1]]; title=t.name; sub='On-site testing'; app.innerHTML=scrTest(t.key); }
+  else if(r==='overall'){ title='Overall assessment'; sub=venue().name; app.innerHTML=scrOverall(); }
+  else if(r==='risk'){ title='Risk assessment'; sub=venue().name; app.innerHTML=scrRisk(); }
+  else if(r==='results'){ title='Results summary'; sub=venue().name; app.innerHTML=scrResults(); }
+  else if(r==='photos'){ title='Photos'; sub=pitch()?pitch().name:''; app.innerHTML=scrPhotos(); }
+  else if(r==='venueform'){ const v=venue(); title='Venue details'; sub=v?v.name:''; app.innerHTML=scrVenueForm(); }
+  else if(r==='brief'){ const v=venue(); title='Pitch brief'; sub=v?v.name:''; app.innerHTML=scrBrief(); }
+  else if(r==='benchmark'){ title='Benchmark & comparison'; sub='Charlotte cluster'; app.innerHTML=scrBenchmark(); }
+  else if(r==='settings'){ title='Data & settings'; app.innerHTML=scrSettings(); }
+
+  $('barTitle').childNodes[0].nodeValue = onHome?'Labosport Pitch Inspector':title;
+  $('barSub').textContent = onHome?'':sub;
+  $('barLogo').style.display = onHome?'block':'none';
+  $('barTitle').style.display = onHome?'none':'flex';
+  $('backBtn').style.display = stack.length>1?'flex':'none';
+  $('tabbar').style.display = TOP.includes(r)?'flex':'none';
+  document.querySelectorAll('.tabbar button').forEach(b=>b.classList.toggle('on',b.dataset.tab===(TOP.includes(r)?r:null)));
+  $('app').parentElement.scrollTop=0;
+  bind();
+}
+
+/* ----------------------------- screens ----------------------------- */
+function venueProgress(v){
+  let done=0,total=0;
+  v.pitches.forEach(p=>{ TESTS.forEach(t=>{total++; if(stats(p.tests[t.key].values).done>0)done++;}); });
+  return total?Math.round(done/total*100):0;
+}
+function scrHome(){
+  const cards=state.venues.map(v=>{
+    const prog=v.briefLoaded?Math.max(12,venueProgress(v)):8;
+    const state_=v.briefLoaded?'<span class="chip brief">Brief loaded ✓</span>':'<span class="chip ghost">Manual</span>';
+    return `<div class="card"><div class="venue" data-open="${v.id}">
+      <div class="vh"><div><div class="vn">${esc(v.name)}</div><div class="va">${esc(v.alias?('AKA '+v.alias):v.address)}</div></div>${state_}</div>
+      <div class="pbar"><div class="pfill" style="width:${prog}%"></div></div>
+      <div class="pmeta"><span>${v.pitches.length} pitch${v.pitches.length>1?'es':''} · ${venueProgress(v)}% tested</span><span>${esc(v.cluster||'')}</span></div></div></div>`;
+  }).join('');
+  return `<div class="note"><b>Data collection.</b> Everything you enter saves to this device automatically and works offline. Word/PDF reports that match your template come in the next update.</div>
+    <h2 class="sec">Venues</h2>${cards}
+    <button class="btn dash" id="uploadBrief">⤓ Upload pitch brief (PDF) → autofill</button>
+    <button class="btn ghost" id="addVenue">+ Add venue manually</button>`;
+}
+
+function scrVenue(){
+  const v=venue(), p=pitch();
+  const wr=v.wr?`<div class="note wr"><b>World Rugby (confidential):</b> ${esc(v.wr)}</div>`:'';
+  const chips=v.pitches.length>1?`<div class="pchips">${v.pitches.map((pp,i)=>`<div class="pchip ${i===CURP?'on':''}" data-pitch="${i}">${esc(pp.name)}</div>`).join('')}<div class="pchip" data-addpitch="1">+ pitch</div></div>`:'';
+  const af=v.briefLoaded?' af':'';
+  const head=`<div class="card">
+    <div class="kv"><span class="k">Venue</span><span class="v${af}">${esc(v.name)}</span></div>
+    ${v.alias?`<div class="kv"><span class="k">Also known as</span><span class="v${af}">${esc(v.alias)}</span></div>`:''}
+    <div class="kv"><span class="k">Address</span><span class="v${af}">${esc(v.address)||'—'}</span></div>
+    <div class="kv"><span class="k">Contact</span><span class="v${af}">${esc(v.contact)||'—'}</span></div>
+    <div class="kv"><span class="k">Position</span><span class="v${af}">${esc(v.position)||'—'}</span></div>
+    <div class="kv"><span class="k">Email / phone</span><span class="v${af}" style="font-size:12px">${v.email?`<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>`:'—'}<br>${v.phone?`<a href="tel:${esc((v.phone||'').replace(/[^\\d+]/g,''))}">📞 ${esc(v.phone)}</a>`:''}</span></div>
+    <div class="kv"><span class="k">Grass type</span><span class="v${af}">${esc(v.grass)||'—'}</span></div>
+    <div class="row" data-edit-venue="1" style="cursor:pointer"><div class="meta"><div class="d">Tap to edit venue details</div></div><span class="chev">›</span></div></div>
+    ${v.briefLoaded?`<button class="btn ghost" data-go="brief">📄 View loaded brief</button>`:''}`;
+
+  const ov=p.overall.level;
+  const ovChip=ov?`<span class="chip ${['','low','mod','high','crit'][ov]}">${RLABEL[ov]} · ${ov}/4</span>`:'<span class="chip ghost">Not rated</span>';
+
+  const auditRows=AUDIT.map(s=>{
+    const filled=Object.values(p.audit[s[0]].fields).some(x=>x&&String(x).trim());
+    return `<div class="row" data-go="audit:${s[0]}"><div class="ic">${'ABCDEFGH'.includes(s[0])?s[0]:'•'}</div>
+      <div class="meta"><div class="t">${s[0]}. ${esc(s[1])}</div><div class="d">${esc(s[2])}</div></div>
+      ${filled?'<span class="tick">✓</span>':(p.audit[s[0]].brief?'<span class="pill">brief</span>':'<span class="chev">›</span>')}</div>`;
+  }).join('');
+
+  const testRows=TESTS.map(t=>{
+    const st=stats(p.tests[t.key].values);
+    const status=st.done?`<span class="pill">${st.done}/${t.n}</span>`:'<span class="chev">›</span>';
+    return `<div class="row" data-go="test:${t.key}"><div class="ic">⬡</div>
+      <div class="meta"><div class="t">${esc(t.name)} ${t.pri?'<span class="badge-pri">PRIORITY</span>':''}</div>
+      <div class="d">${t.n} position${t.n>1?'s':''}${st.avg!=null?` · avg ${fmt(st.avg,t.unit)}`:''}</div></div>${status}</div>`;
+  }).join('');
+
+  return `${wr}${chips}${head}
+    <h2 class="sec">1 · Overall assessment</h2>
+    <div class="card"><div class="row" data-go="overall"><div class="ic">★</div><div class="meta"><div class="t">Overall risk rating</div><div class="d">Summary & headline comment</div></div>${ovChip}</div></div>
+    <h2 class="sec">2 · Venue audit</h2>
+    ${v.briefLoaded?'<div class="hint" style="color:var(--green-d)">✓ Brief loaded — each section shows the questionnaire text; complete/confirm on site.</div>':''}
+    <div class="card">${auditRows}</div>
+    <h2 class="sec">3 · On-site testing</h2>
+    <div class="hint">Tap a test, then type each position reading. Averages & variance update live.</div>
+    <div class="card">${testRows}</div>
+    <h2 class="sec">4 · Results, risk & photos</h2>
+    <div class="card">
+      <div class="row" data-go="results"><div class="ic">▦</div><div class="meta"><div class="t">Results summary</div><div class="d">Averages & max variance by parameter</div></div><span class="chev">›</span></div>
+      <div class="row" data-go="risk"><div class="ic">◈</div><div class="meta"><div class="t">Risk assessment</div><div class="d">10 parameters · Low → Critical</div></div><span class="chev">›</span></div>
+      <div class="row" data-go="photos"><div class="ic">▣</div><div class="meta"><div class="t">Photos</div><div class="d">${p.photos.length} captured</div></div><span class="chev">›</span></div>
+    </div>
+    <h2 class="sec">5 · Report &amp; export</h2>
+    ${v.pitches.length>1
+      ? `<div class="hint">Combined report includes all ${v.pitches.length} pitches in sequence. The Word file matches the Field Report Template exactly.</div>
+         <button class="btn primary" id="genWordAll">⤓ Word report — all ${v.pitches.length} pitches</button>
+         <button class="btn ghost" id="genWord">Word — this pitch only (${esc(p.name)})</button>
+         <button class="btn primary" id="genPdfAll">⤓ PDF report — all pitches</button>
+         <button class="btn ghost" id="genPdf">PDF — this pitch only</button>`
+      : `<div class="hint">Generates for <b>${esc(p.name)}</b>. The Word file matches the Field Report Template exactly.</div>
+         <button class="btn primary" id="genWord">⤓ Word report (.docx)</button>
+         <button class="btn primary" id="genPdf">⤓ PDF report</button>`}
+    <button class="btn ghost" id="exportCsv">▦ Export this venue (CSV)</button>
+    <button class="btn ghost" id="pubDrive">☁ Publish this venue to Drive folder</button>
+    <button class="btn danger" id="delPitch">🗑 Delete ${v.pitches.length>1?'this pitch':'venue'}</button>`;
+}
+
+function scrAudit(code){
+  const s=AUDIT.find(a=>a[0]===code); const p=pitch(); const a=p.audit[code];
+  const briefNote=a.brief?`<div class="note af"><b>From brief — ${esc(s[3])}:</b> ${esc(a.brief)}</div>`:'';
+  const fields=s[4].map(([label,type])=>{
+    const val=a.fields[label]; const fc=(val&&String(val).trim())?' filled':'';
+    if(type===YN){const v=val||''; return `<div class="field"><label>${esc(label)}</label><div class="seg" data-yn="${esc(label)}">
+      ${['Yes','No','N/A'].map(o=>`<button data-v="${o}" class="${v===o?'on':''}">${o}</button>`).join('')}</div></div>`;}
+    if(type===AREA) return `<div class="field${fc}"><label>${esc(label)}</label><textarea data-f="${esc(label)}">${esc(val||'')}</textarea></div>`;
+    return `<div class="field${fc}"><label>${esc(label)}</label><input data-f="${esc(label)}" inputmode="text" value="${esc(val||'')}"></div>`;
+  }).join('');
+  const ai=AUDIT.findIndex(a=>a[0]===code), an=AUDIT[ai+1];
+  return `${briefNote}<div class="hint">Appendix ${s[0]} · ${esc(s[2])} <span class="saved" id="savedFlag">saved ✓</span></div>
+    <div class="card">${fields}</div>
+    ${an?`<button class="btn primary" id="nextAudit">Next section: ${an[0]}. ${esc(an[1])} →</button>`:''}
+    <button class="btn ghost" data-back="1">Done</button>`;
+}
+
+function scrTest(key){
+  const t=TKEY[key]; const p=pitch(); const td=p.tests[key]; const st=stats(td.values);
+  const grid=td.values.map((v,i)=>`<div class="posbox ${v!=null?'done':''}">
+    <div class="pn">P${i+1}</div>
+    <input data-pos="${i}" inputmode="decimal" placeholder="–" value="${v!=null?v:''}">
+    <div class="pu">${esc(t.unit)||'&nbsp;'}</div></div>`).join('');
+  const noteLine=t.note?`<div class="hint">${esc(t.note)}</div>`:'';
+  const idx=TESTS.findIndex(x=>x.key===key), nx=TESTS[idx+1];
+  return `<div class="hint">${esc(t.name)} · ${t.n} position${t.n>1?'s':''}${t.pri?' · <b style="color:var(--crit)">priority</b>':''} <span class="saved" id="savedFlag">saved ✓</span></div>
+    ${pitchSVG(key)}
+    <div class="leg"><span><i class="dot" style="background:var(--green)"></i> recorded</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
+    <div class="card" style="padding:0">
+      <div class="stat">
+        <div class="s"><div class="l">Average</div><div class="n" id="tAvg">${st.avg!=null?fmt(st.avg,''):'—'}</div></div>
+        <div class="s"><div class="l">Max var.</div><div class="n" id="tVar">${st.varPct!=null?st.varPct+'%':'—'}</div></div>
+        <div class="s"><div class="l">Done</div><div class="n" id="tDone">${st.done}/${t.n}</div></div>
+      </div>
+      <div class="posgrid" id="posGrid">${grid}</div>
+    </div>${noteLine}
+    <div class="card" style="padding:0">
+      <div class="field"><label>Method used to collect this data</label>
+        <input id="testMethod" inputmode="text" placeholder="e.g. Clegg hammer 2.25 kg, 1 drop per position" value="${esc(td.method||'')}"></div>
+      <div class="field"><label>Comments / observations</label>
+        <textarea id="testComment" placeholder="e.g. lower readings in the droughted southern in-goal area…">${esc(td.comment)}</textarea></div></div>
+    ${nx?`<button class="btn primary" id="nextTest">Next test: ${esc(nx.name)} →</button>`:''}
+    <button class="btn ghost" data-back="1">Done</button>`;
+}
+
+function scrOverall(){
+  const p=pitch(); const lv=p.overall.level;
+  return `<div class="card"><div class="field"><label>Overall risk rating</label>
+    <div class="seg risk" id="ovSeg">${[1,2,3,4].map(l=>`<button data-l="${l}" class="${lv===l?'on':''}">${RLABEL[l]} ${l}</button>`).join('')}</div></div>
+    <div class="field"><label>Headline comment <span class="saved" id="savedFlag">saved ✓</span></label>
+      <textarea id="ovComment" style="min-height:150px" placeholder="Overall assessment narrative…">${esc(p.overall.comment)}</textarea></div></div>
+    <button class="btn ghost" data-back="1">Done</button>`;
+}
+
+function scrRisk(){
+  const p=pitch();
+  const rows=RISK.map(([k,label])=>{const lv=p.risk[k]||0;
+    return `<div class="field"><label>${esc(label)}</label><div class="seg risk" data-risk="${k}">
+      ${[1,2,3,4].map(l=>`<button data-l="${l}" class="${lv===l?'on':''}">${['Low','Mod','High','Crit'][l-1]}</button>`).join('')}</div></div>`;}).join('');
+  return `<div class="hint">Set a 1–4 level per parameter. <span class="saved" id="savedFlag">saved ✓</span></div>
+    <div class="card">${rows}</div><button class="btn ghost" data-back="1">Done</button>`;
+}
+
+function scrResults(){
+  const p=pitch();
+  const rows=TESTS.map(t=>{const st=stats(p.tests[t.key].values);
+    const dim=st.avg==null?'dim':'';
+    return `<tr class="${t.pri?'pri':''}"><td>${esc(t.name)} ${t.pri?'<span class="badge-pri">PRI</span>':''}</td>
+      <td class="num ${dim}">${st.avg!=null?fmt(st.avg,t.unit):'—'}</td>
+      <td class="num ${dim}">${st.varPct!=null?st.varPct:'—'}</td></tr>`;}).join('');
+  return `<div class="hint">Live from your on-site entries. Max variance = largest reading deviation from the average (%).</div>
+    <div class="card" style="padding:6px 6px 2px"><table class="res"><thead><tr><th>Parameter</th><th class="num">Avg</th><th class="num">Var %</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <button class="btn ghost" data-back="1">Back</button>`;
+}
+
+function scrPhotos(){
+  const p=pitch();
+  const items=p.photos.map(ph=>`<div class="photo"><img src="${ph.dataUrl}" alt=""><button class="del" data-delphoto="${ph.id}">✕</button></div>`).join('');
+  return `<div class="hint">Add photos with the camera or from your library. The first 6 fill the report's photo grid (Overview, Close up, Photo 3–6). <span class="saved" id="savedFlag">saved ✓</span></div>
+    <div class="card" style="padding:0"><div class="photogrid">${items}<div class="photo-add" id="addPhoto">📷<span>Take photo</span></div></div>
+      <div class="field"><label>Additional photos / notes &amp; comments (report)</label><textarea id="photoNotes" placeholder="Notes that appear under the photo grid…">${esc(p.photoNotes||'')}</textarea></div></div>
+    <button class="btn ghost" id="addPhotoLib">🖼 Choose from library</button>
+    <button class="btn ghost" data-back="1">Done</button>`;
+}
+
+function scrBenchmark(){
+  const pitches=[]; state.venues.forEach(v=>v.pitches.forEach(p=>pitches.push({id:p.id,label:v.name+' — '+p.name})));
+  const b=state.benchmark;
+  if(!b.benchId&&pitches.length) b.benchId=pitches[0].id;
+  const opts=pitches.map(p=>`<option value="${p.id}" ${b.benchId===p.id?'selected':''}>${esc(p.label)}</option>`).join('');
+  const others=pitches.filter(p=>p.id!==b.benchId);
+  const comp=others.map(p=>{const c=b.comparisons[p.id]||{rel:'sim',note:''};
+    return `<div class="card"><div class="field"><label>${esc(p.label)}</label>
+      <div class="seg" data-cmp="${p.id}">${[['worse','↓ worse'],['sim','≈ similar'],['better','↑ better']].map(o=>`<button data-v="${o[0]}" class="${c.rel===o[0]?'on':''}">${o[1]}</button>`).join('')}</div></div>
+      <div class="field"><label>Notes / significant differences</label><textarea data-cmpnote="${p.id}">${esc(c.note)}</textarea></div></div>`;}).join('');
+  return `<div class="note"><b>Benchmark workflow.</b> Inspect one pitch in detail as the benchmark (best or worst candidate), then assess the others comparatively. Record the rationale and any significant differences. <span class="saved" id="savedFlag">saved ✓</span></div>
+    <div class="card"><div class="field"><label>Benchmark pitch</label><select id="benchSel">${opts}</select></div>
+      <div class="field"><label>Why this benchmark? (selection rationale)</label><textarea id="benchRat" placeholder="e.g. Selected as the worst-case candidate because…">${esc(b.rationale)}</textarea></div></div>
+    <h2 class="sec">Comparative observations</h2>${comp||'<div class="hint">Add more pitches to compare.</div>'}`;
+}
+
+function syncStatusText(){
+  if(!window.GDrive) return 'Sync module not loaded';
+  if(!GDrive.getClientId()) return 'Not set up — add your Client ID below';
+  if(!GDrive.isConnected()) return 'Client ID saved — tap Connect';
+  const ls=GDrive.lastSync(); return ls?('Connected · last synced '+timeAgo(ls)):'Connected';
+}
+function timeAgo(ms){ if(!ms)return 'never'; const s=Math.round((Date.now()-ms)/1000);
+  if(s<60)return 'just now'; if(s<3600)return Math.round(s/60)+' min ago'; if(s<86400)return Math.round(s/3600)+' h ago'; return new Date(ms).toLocaleString(); }
+function scrVenueForm(){
+  const v=venue(); if(!v) return '<div class="hint">No venue.</div>';
+  const F=[['name','Venue name','e.g. Ramblewood Soccer Complex','text'],
+    ['alias','Also known as','optional','text'],
+    ['cluster','Cluster','e.g. Charlotte','text'],
+    ['address','Address','street, city, state ZIP','text'],
+    ['contact','Grounds manager / contact','full name','text'],
+    ['position','Position','e.g. Sports Field Manager','text'],
+    ['email','Email','name@example.com','email'],
+    ['phone','Phone','e.g. 980-123-4567','tel'],
+    ['grass','Grass type','e.g. Bermuda','text']];
+  const rows=F.map(([k,label,ph,type])=>`<div class="field"><label>${label}</label><input data-vf="${k}" type="${type}" ${type==='email'?'autocapitalize="off" spellcheck="false"':''} inputmode="${type==='tel'?'tel':(type==='email'?'email':'text')}" value="${esc(v[k]||'')}" placeholder="${esc(ph)}"></div>`).join('');
+  return `<div class="hint">Fill in what you know — you can edit any time. <span class="saved" id="savedFlag">saved ✓</span></div>
+    <div class="card">${rows}</div>
+    <button class="btn primary" data-back="1">Done</button>`;
+}
+const BRIEF_ORDER=['Field usage','Pitch dimensions','Soil profile','Irrigation and Water management','Drainage & Waterlogging Performance','Surface Performance','Safety','Turf Management Skills','Resources','Additional aspects'];
+function scrBrief(){
+  const v=venue(); if(!v) return '';
+  const hdr=`<div class="card">
+    <div class="kv"><span class="k">Venue</span><span class="v">${esc(v.name)}</span></div>
+    ${v.alias?`<div class="kv"><span class="k">Also known as</span><span class="v">${esc(v.alias)}</span></div>`:''}
+    <div class="kv"><span class="k">Address</span><span class="v">${esc(v.address)||'—'}</span></div>
+    <div class="kv"><span class="k">Contact</span><span class="v">${esc(v.contact)||'—'}${v.position?' · '+esc(v.position):''}</span></div>
+    <div class="kv"><span class="k">Grass type</span><span class="v">${esc(v.grass)||'—'}</span></div></div>`;
+  const wr=v.wr?`<div class="note wr"><b>World Rugby (confidential):</b> ${esc(v.wr)}</div>`:'';
+  const vc=v.venueComment?`<div class="note af"><b>Comments from the venue:</b> ${esc(v.venueComment)}</div>`:'';
+  const params=BRIEF_ORDER.filter(k=>v.params&&v.params[k]).map(k=>`<div class="brow"><div class="bk">${esc(k)}</div><div class="bv">${esc(v.params[k])}</div></div>`).join('');
+  const imgs=(v.briefImages&&v.briefImages.length)
+    ? `<h2 class="sec">Brief images / map</h2><div class="briefimgs">${v.briefImages.map((d,i)=>`<a href="${d}" target="_blank" rel="noopener"><img src="${d}" alt="Brief image ${i+1}"></a>`).join('')}</div><div class="hint">Tap an image to open it full-size.</div>`
+    : '';
+  return `<div class="hint">The inspection brief for this venue — reference it any time while testing.</div>
+    ${hdr}${wr}${vc}
+    ${params?`<h2 class="sec">Detailed risk assessment (from brief)</h2><div class="card">${params}</div>`:''}
+    ${imgs}
+    <button class="btn ghost" data-back="1">Done</button>`;
+}
+function scrSettings(){
+  const connected=window.GDrive&&GDrive.isConnected();
+  const cid=window.GDrive?GDrive.getClientId():'';
+  const auto=window.GDrive?GDrive.autoSyncOn():true;
+  const drive=`<h2 class="sec">Google Drive sync</h2>
+    <div class="hint" id="syncStatus">${esc(syncStatusText())}</div>
+    <div class="card">
+      <div class="field"><label>Google OAuth Client ID</label>
+        <input id="cidInput" value="${esc(cid)}" placeholder="xxxxx.apps.googleusercontent.com" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="field"><label>Two-way auto-sync</label>
+        <div class="seg" id="autoSeg"><button data-v="1" class="${auto?'on':''}">On</button><button data-v="0" class="${auto?'':'on'}">Off</button></div></div>
+    </div>
+    ${connected
+      ? `<button class="btn primary" id="syncNow">⟳ Sync now</button><button class="btn ghost" id="driveDisc">Disconnect Google Drive</button>`
+      : `<button class="btn primary" id="driveConn">Connect Google Drive</button>`}
+    <div class="hint">Creates a “Labosport Pitch Inspector” folder in your Drive and keeps <b>labosport_data.json</b> in sync. Setup steps are in the README. The Client ID is not secret.</div>`;
+  // ---- team sync (Firebase) ----
+  const fbOn=window.FB&&FB.isSignedIn(), fbHas=window.FB&&FB.hasConfig();
+  const fbStat= !window.FB?'Module not loaded' : (!fbHas?'Not set up — paste your Firebase config below' : (fbOn?('Team sync on · '+esc(FB.userEmail())):'Config saved — tap Connect'));
+  const team=`<h2 class="sec">Team sync (Firebase) — live</h2>
+    <div class="hint" id="fbStatus">${fbStat}</div>
+    <div class="card"><div class="field"><label>Firebase web config (paste from Firebase console)</label>
+      <textarea id="fbConfig" placeholder='{ "apiKey": "…", "authDomain": "…", "projectId": "…", … }' autocapitalize="off" spellcheck="false" style="min-height:96px;font-size:12px">${window.FB?esc(FB.getConfigText()):''}</textarea></div></div>
+    ${fbOn
+      ? `<button class="btn ghost" id="fbSignout">Sign out of team sync</button>`
+      : `<button class="btn primary" id="fbConnect">Connect team sync (Google sign-in)</button>`}
+    <div class="hint">Everyone you authorise shares the same live venue data (measurements, audit, notes). Photos stay on each device — share those via “Publish to Drive”. Setup &amp; security rules are in the README.</div>`;
+  return `<h2 class="sec">Inspector</h2>
+    <div class="card"><div class="field"><label>Your name (appears on exports) <span class="saved" id="savedFlag">saved ✓</span></label><input id="testerName" value="${esc(state.tester||'')}" placeholder="e.g. Dillon McCallum"></div></div>
+    ${team}
+    ${drive}
+    <h2 class="sec">Backup & export</h2>
+    <div class="card">
+      <div class="row" id="expJson"><div class="ic">⤓</div><div class="meta"><div class="t">Export backup (JSON)</div><div class="d">All venues & data — keep it safe</div></div><span class="chev">›</span></div>
+      <div class="row" id="impJson"><div class="ic">⤒</div><div class="meta"><div class="t">Import backup (JSON)</div><div class="d">Restore from a backup file</div></div><span class="chev">›</span></div>
+      <div class="row" id="expCsvAll"><div class="ic">▦</div><div class="meta"><div class="t">Export all data (CSV)</div><div class="d">Open in Excel / Sheets</div></div><span class="chev">›</span></div>
+    </div>
+    <h2 class="sec">About</h2>
+    <div class="card" style="padding:14px;font-size:13px;line-height:1.6;color:var(--ink)">
+      <b>Labosport Pitch Inspector</b> — v1 (data collection).<br>
+      Works offline once loaded; data is stored on this device only. Use <b>Export backup</b> regularly.<br><br>
+      Coming next: Word + PDF reports that exactly match the Field Report Template.
+    </div>
+    <button class="btn danger" id="clearAll">Reset all data</button>`;
+}
+
+/* pitch diagram with draggable test positions */
+const PW=360, PH=140, PPAD=14;
+function defaultPositions(n){
+  let pts;
+  if(n<=3) pts=[[.5,.28],[.5,.5],[.5,.72]];
+  else if(n===6) pts=[[.28,.3],[.28,.7],[.5,.3],[.5,.7],[.72,.3],[.72,.7]];
+  else pts=[[.16,.3],[.16,.7],[.38,.3],[.38,.7],[.5,.3],[.5,.7],[.62,.3],[.62,.7],[.84,.3],[.84,.7],[.5,.12],[.5,.88]];
+  return pts.slice(0,n).map(p=>p.slice());
+}
+function testPositions(p,key){ const t=TKEY[key]; const td=p.tests[key];
+  if(td.positions&&td.positions.length===t.n) return td.positions; return defaultPositions(t.n); }
+function randomPositions(n){ const pts=[], minD=Math.max(0.08,0.5/Math.sqrt(n));
+  for(let i=0;i<n;i++){ let best=null;
+    for(let tries=0;tries<30;tries++){ const c=[0.05+Math.random()*0.9, 0.08+Math.random()*0.84];
+      if(pts.every(p=>Math.hypot(p[0]-c[0],(p[1]-c[1])*0.4)>minD)){ best=c; break; } if(!best) best=c; }
+    pts.push(best); }
+  return pts; }
+function pitchSVG(key){
+  const p=pitch(), t=TKEY[key], pos=testPositions(p,key), vals=p.tests[key].values;
+  const dots=pos.map((pp,k)=>{const x=PPAD+pp[0]*(PW-2*PPAD),y=PPAD+pp[1]*(PH-2*PPAD);const done=vals[k]!=null;
+    const lbl=done?shortNum(vals[k]):String(k+1);
+    return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${done?'#1f7a4d':'#fff'}" stroke="${done?'#155c39':'#c2cad2'}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="${dotFontSVG(lbl)}" font-weight="700" text-anchor="middle" fill="${done?'#fff':'#6b7785'}">${esc(lbl)}</text></g>`;}).join('');
+  return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#e7f3ec;border-radius:12px;border:1px solid #d4e6db">
+    <rect x="${PPAD}" y="${PPAD}" width="${PW-2*PPAD}" height="${PH-2*PPAD}" fill="#cfe8d6" stroke="#9cc9ad" stroke-width="2"/>
+    <line x1="${PW/2}" y1="${PPAD}" x2="${PW/2}" y2="${PH-PPAD}" stroke="#9cc9ad" stroke-width="1.5"/>
+    <line x1="${PPAD+(PW-2*PPAD)*.22}" y1="${PPAD}" x2="${PPAD+(PW-2*PPAD)*.22}" y2="${PH-PPAD}" stroke="#9cc9ad" stroke-dasharray="3 3"/>
+    <line x1="${PPAD+(PW-2*PPAD)*.78}" y1="${PPAD}" x2="${PPAD+(PW-2*PPAD)*.78}" y2="${PH-PPAD}" stroke="#9cc9ad" stroke-dasharray="3 3"/>${dots}</svg></div>
+    <div class="draghint">Drag any numbered dot to the spot you actually tested</div>
+    <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="randDots">🎲 Randomize</button> <button class="btn sm ghost" id="resetDots">↺ Reset to default</button></div>`;
+}
+function bindPitchDrag(){
+  const svg=$('pitchSvg'); if(!svg) return;
+  const key=cur().split(':')[1], t=TKEY[key]; let dragging=null;
+  function frac(e){ const r=svg.getBoundingClientRect(); const ux=(e.clientX-r.left)/r.width*PW, uy=(e.clientY-r.top)/r.height*PH;
+    let fx=(ux-PPAD)/(PW-2*PPAD), fy=(uy-PPAD)/(PH-2*PPAD); return [Math.max(0,Math.min(1,fx)),Math.max(0,Math.min(1,fy))]; }
+  function ensure(){ const td=pitch().tests[key]; if(!td.positions||td.positions.length!==t.n) td.positions=defaultPositions(t.n); return td.positions; }
+  svg.querySelectorAll('.dot').forEach(g=>g.addEventListener('pointerdown',ev=>{ ev.preventDefault(); dragging=+g.dataset.i; ensure(); try{svg.setPointerCapture(ev.pointerId);}catch(e){} }));
+  svg.addEventListener('pointermove',ev=>{ if(dragging==null)return; const pos=ensure(); pos[dragging]=frac(ev);
+    const x=PPAD+pos[dragging][0]*(PW-2*PPAD), y=PPAD+pos[dragging][1]*(PH-2*PPAD), g=svg.querySelector('.dot[data-i="'+dragging+'"]');
+    g.querySelector('circle').setAttribute('cx',x); g.querySelector('circle').setAttribute('cy',y);
+    const tx=g.querySelector('text'); tx.setAttribute('x',x); tx.setAttribute('y',y+3.5); });
+  function end(){ if(dragging!=null){ dragging=null; save(true); } }
+  svg.addEventListener('pointerup',end); svg.addEventListener('pointercancel',end);
+}
+
+/* ----------------------------- event binding (per render) ----------------------------- */
+function bind(){
+  const app=$('app');
+  app.querySelectorAll('[data-open]').forEach(e=>e.onclick=()=>{CUR=e.dataset.open;CURP=0;go('venue',true);});
+  app.querySelectorAll('[data-go]').forEach(e=>e.onclick=()=>go(e.dataset.go,true));
+  app.querySelectorAll('[data-back]').forEach(e=>e.onclick=back);
+  app.querySelectorAll('[data-pitch]').forEach(e=>e.onclick=()=>{CURP=+e.dataset.pitch;render();});
+  app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
+
+  if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
+  if($('addVenue'))$('addVenue').onclick=addVenueManual;
+  app.querySelectorAll('[data-edit-venue]').forEach(e=>e.onclick=editVenue);
+  app.querySelectorAll('[data-vf]').forEach(inp=>inp.oninput=()=>{ const v=venue(); if(v){ v[inp.dataset.vf]=inp.value; save(true); } });
+
+  // audit fields
+  if($('nextAudit'))$('nextAudit').onclick=()=>{ const code=cur().split(':')[1]; const i=AUDIT.findIndex(a=>a[0]===code); const nx=AUDIT[i+1]; if(nx)goReplace('audit:'+nx[0]); };
+  app.querySelectorAll('[data-f]').forEach(inp=>inp.oninput=()=>{const code=cur().split(':')[1];pitch().audit[code].fields[inp.dataset.f]=inp.value;save(true);});
+  app.querySelectorAll('[data-yn]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{const code=cur().split(':')[1];pitch().audit[code].fields[seg.dataset.yn]=b.dataset.v;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);}));
+
+  // test entry
+  app.querySelectorAll('[data-pos]').forEach(inp=>inp.oninput=()=>{
+    const key=cur().split(':')[1],i=+inp.dataset.pos; const raw=inp.value.trim();
+    const val=raw===''?null:parseFloat(raw.replace(',','.')); pitch().tests[key].values[i]=(val==null||isNaN(val))?null:val;
+    const stored=pitch().tests[key].values[i];
+    inp.closest('.posbox').classList.toggle('done',stored!=null);
+    const g=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // live-update the map dot to show the value
+    if(g){ const done=stored!=null, lbl=done?shortNum(stored):String(i+1), tx=g.querySelector('text');
+      g.querySelector('circle').setAttribute('fill',done?'#1f7a4d':'#fff'); g.querySelector('circle').setAttribute('stroke',done?'#155c39':'#c2cad2');
+      tx.textContent=lbl; tx.setAttribute('fill',done?'#fff':'#6b7785'); tx.setAttribute('font-size',dotFontSVG(lbl)); }
+    const st=stats(pitch().tests[key].values);
+    $('tAvg').textContent=st.avg!=null?fmt(st.avg,''):'—'; $('tVar').textContent=st.varPct!=null?st.varPct+'%':'—'; $('tDone').textContent=st.done+'/'+TKEY[key].n;
+    save(true);
+  });
+  bindPitchDrag();
+  if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); save(true); render(); toast('Positions randomized'); };
+  if($('resetDots'))$('resetDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=null; save(true); render(); toast('Positions reset to default'); };
+  if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const i=TESTS.findIndex(x=>x.key===key); const nx=TESTS[i+1]; if(nx)goReplace('test:'+nx.key); };
+  if($('testMethod'))$('testMethod').oninput=()=>{pitch().tests[cur().split(':')[1]].method=$('testMethod').value;save(true);};
+  if($('testComment'))$('testComment').oninput=()=>{pitch().tests[cur().split(':')[1]].comment=$('testComment').value;save(true);};
+
+  // overall
+  if($('ovSeg'))$('ovSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{pitch().overall.level=+b.dataset.l;$('ovSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);});
+  if($('ovComment'))$('ovComment').oninput=()=>{pitch().overall.comment=$('ovComment').value;save(true);};
+
+  // risk
+  app.querySelectorAll('[data-risk]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{pitch().risk[seg.dataset.risk]=+b.dataset.l;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);}));
+
+  // photos
+  if($('addPhoto'))$('addPhoto').onclick=()=>$('photoInput').click();
+  if($('addPhotoLib'))$('addPhotoLib').onclick=()=>$('photoLibInput').click();
+  if($('photoNotes'))$('photoNotes').oninput=()=>{pitch().photoNotes=$('photoNotes').value;save(true);};
+  app.querySelectorAll('[data-delphoto]').forEach(e=>e.onclick=()=>{const id=e.dataset.delphoto;const p=pitch();p.photos=p.photos.filter(x=>x.id!==id);save();render();});
+
+  // report + export buttons
+  if($('genWord'))$('genWord').onclick=()=>generateWord(venue(),[pitch()]);
+  if($('genWordAll'))$('genWordAll').onclick=()=>generateWord(venue(),venue().pitches);
+  if($('genPdf'))$('genPdf').onclick=()=>generatePDF(venue(),[pitch()]);
+  if($('genPdfAll'))$('genPdfAll').onclick=()=>generatePDF(venue(),venue().pitches);
+  if($('exportCsv'))$('exportCsv').onclick=()=>exportCSV(venue());
+  if($('pubDrive'))$('pubDrive').onclick=()=>publishVenueDrive(venue());
+  if($('delPitch'))$('delPitch').onclick=deletePitchOrVenue;
+
+  // benchmark
+  if($('benchSel'))$('benchSel').onchange=()=>{state.benchmark.benchId=$('benchSel').value;save();render();};
+  if($('benchRat'))$('benchRat').oninput=()=>{state.benchmark.rationale=$('benchRat').value;save(true);};
+  app.querySelectorAll('[data-cmp]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{const id=seg.dataset.cmp;state.benchmark.comparisons[id]=state.benchmark.comparisons[id]||{rel:'sim',note:''};state.benchmark.comparisons[id].rel=b.dataset.v;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);}));
+  app.querySelectorAll('[data-cmpnote]').forEach(t=>t.oninput=()=>{const id=t.dataset.cmpnote;state.benchmark.comparisons[id]=state.benchmark.comparisons[id]||{rel:'sim',note:''};state.benchmark.comparisons[id].note=t.value;save(true);});
+
+  // settings
+  if($('testerName'))$('testerName').oninput=()=>{state.tester=$('testerName').value;save(true);};
+  // google drive sync
+  if($('cidInput'))$('cidInput').onchange=()=>{ GDrive.setClientId($('cidInput').value); render(); };
+  if($('autoSeg'))$('autoSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ GDrive.setAutoSync(b.dataset.v==='1'); $('autoSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b)); });
+  if($('fbConfig'))$('fbConfig').onchange=()=>{ if(window.FB){ if(FB.setConfig($('fbConfig').value)) toast('Firebase config saved'); } };
+  if($('fbConnect'))$('fbConnect').onclick=()=>{ if(window.FB){ FB.setConfig($('fbConfig').value); FB.connect(); } };
+  if($('fbSignout'))$('fbSignout').onclick=()=>{ if(window.FB){ FB.disconnect(); render(); } };
+  if($('driveConn'))$('driveConn').onclick=()=>{ GDrive.setClientId($('cidInput').value); GDrive.connect().then(()=>render()); };
+  if($('driveDisc'))$('driveDisc').onclick=()=>{ GDrive.disconnect(); render(); };
+  if($('syncNow'))$('syncNow').onclick=()=>{ GDrive.syncNow().then(()=>render()).catch(()=>{}); };
+  if($('expJson'))$('expJson').onclick=exportJSON;
+  if($('impJson'))$('impJson').onclick=()=>$('importInput').click();
+  if($('expCsvAll'))$('expCsvAll').onclick=()=>exportCSV(null);
+  if($('clearAll'))$('clearAll').onclick=()=>{if(confirm('Reset ALL data and reload the two seed venues? Export a backup first if unsure.')){state=freshState();save();go('home');}};
+}
+
+/* ----------------------------- actions ----------------------------- */
+function addPitch(){ const name=prompt('Name for the new pitch:','Pitch '+(venue().pitches.length+1)); if(!name)return; venue().pitches.push(newPitch(name.trim())); CURP=venue().pitches.length-1; save(); render(); }
+function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
+function editVenue(){ go('venueform',true); }
+function deletePitchOrVenue(){ const v=venue();
+  if(v.pitches.length>1){ if(confirm('Delete pitch “'+v.pitches[CURP].name+'” and its data?')){v.pitches.splice(CURP,1);CURP=0;save();render();toast('Pitch deleted');} }
+  else { if(confirm('Delete venue “'+v.name+'” and all its data? This cannot be undone.')){state.venues=state.venues.filter(x=>x.id!==v.id);save();go('home');toast('Venue deleted');} } }
+
+/* brief upload -> parse -> autofill */
+const pdfjsLib = window['pdfjsLib'] || window['pdfjs-dist/build/pdf'];
+function setupPdf(){ try{ if(window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){} }
+/* pull large embedded images (e.g. the venue/pitch map) out of a brief PDF */
+async function extractBriefImages(pdfDoc){
+  const PDFJS=window.pdfjsLib; if(!PDFJS||!PDFJS.OPS) return [];
+  const out=[], seen=new Set();
+  const IMG_OPS=[PDFJS.OPS.paintImageXObject, PDFJS.OPS.paintJpegXObject].filter(x=>x!=null);
+  for(let i=1;i<=pdfDoc.numPages;i++){
+    let page,ops; try{ page=await pdfDoc.getPage(i); ops=await page.getOperatorList(); }catch(e){ continue; }
+    const names=[];
+    for(let j=0;j<ops.fnArray.length;j++){ if(IMG_OPS.indexOf(ops.fnArray[j])>=0){ const a=ops.argsArray[j]; if(a&&typeof a[0]==='string') names.push(a[0]); } }
+    for(const name of names){
+      if(seen.has(name))continue; seen.add(name);
+      let img=null;
+      try{ img = page.objs.has(name) ? page.objs.get(name)
+        : await new Promise(r=>{ let done=false; try{ page.objs.get(name,v=>{done=true;r(v);}); }catch(e){ r(null);} setTimeout(()=>{ if(!done)r(null); },2000); }); }catch(e){ img=null; }
+      if(!img||!img.width||!img.height||img.width<300||img.height<300||!img.data) continue;
+      try{
+        const w=img.width,h=img.height,N=w*h, c=document.createElement('canvas'); c.width=w;c.height=h;
+        const ctx=c.getContext('2d'), id=ctx.createImageData(w,h), dst=id.data, src=img.data;
+        if(src.length===N*4){ dst.set(src); }
+        else if(src.length===N*3){ for(let k=0,s=0,d=0;k<N;k++){ dst[d++]=src[s++];dst[d++]=src[s++];dst[d++]=src[s++];dst[d++]=255; } }
+        else if(src.length===N){ for(let k=0,d=0;k<N;k++){ const g=src[k]; dst[d++]=g;dst[d++]=g;dst[d++]=g;dst[d++]=255; } }
+        else continue;
+        ctx.putImageData(id,0,0);
+        let cw=w,ch=h; const max=900;
+        if(cw>max){ ch=Math.round(ch*max/cw); cw=max; const c2=document.createElement('canvas'); c2.width=cw;c2.height=ch; c2.getContext('2d').drawImage(c,0,0,cw,ch); out.push(c2.toDataURL('image/jpeg',0.65)); }
+        else out.push(c.toDataURL('image/jpeg',0.65));
+      }catch(e){}
+    }
+  }
+  return out;
+}
+async function handleBrief(file){
+  if(!window.pdfjsLib){ toast('⚠ PDF engine not loaded — connect to the internet once, then retry'); return; }
+  toast('<span class="spin"></span> Reading brief…');
+  try{
+    const buf=await file.arrayBuffer();
+    const doc=await window.pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
+    const pages=[];
+    for(let i=1;i<=doc.numPages;i++){ const tc=await (await doc.getPage(i)).getTextContent();
+      pages.push(tc.items.filter(it=>it.str).map(it=>({x:it.transform[4],y:it.transform[5],str:it.str}))); }
+    const pv=parseBrief(pages);
+    if(!pv.name){ toast('⚠ Could not read this brief — is it a Labosport brief PDF?'); return; }
+    // update existing venue by name, else add
+    let v=state.venues.find(x=>x.name.toLowerCase().trim()===pv.name.toLowerCase().trim());
+    if(v){ Object.assign(v,{address:pv.address||v.address,contact:pv.contact||v.contact,position:pv.position||v.position,
+        email:pv.email||v.email,phone:pv.phone||v.phone,grass:pv.grass||v.grass,wr:pv.wr||v.wr,
+        venueComment:pv.venueComment||v.venueComment,params:Object.keys(pv.params).length?pv.params:v.params,briefLoaded:true});
+      v.pitches.forEach(p=>AUDIT.forEach(s=>{const t=v.params[s[3]]||''; if(t&&!p.audit[s[0]].brief)p.audit[s[0]].brief=t;}));
+      extractAuditFields(v);
+      toast('Updated “'+v.name+'” from brief ✓');
+    } else { v=venueFromParsed(pv); state.venues.push(v); toast('Added “'+v.name+'” from brief ✓'); }
+    try{ const imgs=await extractBriefImages(doc); if(imgs.length) v.briefImages=imgs; }catch(e){ console.warn('brief image extract failed',e); }
+    save(); CUR=v.id; CURP=0; go('venue',true);
+  }catch(e){ console.error(e); toast('⚠ Failed to read PDF: '+e.message); }
+}
+
+/* photo capture with downscale */
+function addPhotoFile(file){ return new Promise(resolve=>{
+  const reader=new FileReader();
+  reader.onload=()=>{ const img=new Image();
+    img.onload=()=>{ const max=1000; let w=img.width,h=img.height; if(w>h&&w>max){h=h*max/w;w=max;} else if(h>max){w=w*max/h;h=max;}
+      const c=document.createElement('canvas'); c.width=w;c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
+      pitch().photos.push({id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:Math.round(w),h:Math.round(h)}); resolve(true); };
+    img.onerror=()=>resolve(false); img.src=reader.result; };
+  reader.onerror=()=>resolve(false); reader.readAsDataURL(file);
+}); }
+async function handlePhotos(fileList){
+  const files=Array.from(fileList||[]).filter(f=>f&&/^image\//.test(f.type||'')); if(!files.length) return;
+  toast('<span class="spin"></span> Adding photo'+(files.length>1?'s':'')+'…');
+  for(const f of files){ try{ await addPhotoFile(f); }catch(e){} }
+  try{ save(); render(); toast('Added '+files.length+' photo'+(files.length>1?'s':'')+' ✓'); }
+  catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); }
+}
+
+/* ----------------------------- exports ----------------------------- */
+function dl(name,content,type){ const blob=new Blob([content],{type:type||'text/plain'}); const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000); }
+function csvCell(s){ s=(s==null?'':String(s)); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+function csvForVenue(onlyVenue){
+  const rows=[['Venue','Pitch','Category','Item','Value','Unit']];
+  const vs=onlyVenue?[onlyVenue]:state.venues;
+  vs.forEach(v=>v.pitches.forEach(p=>{
+    TESTS.forEach(t=>{ const td=p.tests[t.key]; td.values.forEach((val,i)=>rows.push([v.name,p.name,'Test: '+t.name,'P'+(i+1),val==null?'':val,t.unit]));
+      const st=stats(td.values); rows.push([v.name,p.name,'Test summary',t.name+' — average',st.avg!=null?Math.round(st.avg*100)/100:'',t.unit]);
+      rows.push([v.name,p.name,'Test summary',t.name+' — max variance %',st.varPct!=null?st.varPct:'','%']);
+      if(td.method) rows.push([v.name,p.name,'Test method',t.name,td.method,'']);
+      if(td.comment) rows.push([v.name,p.name,'Test comment',t.name,td.comment,'']); });
+    AUDIT.forEach(s=>{ const a=p.audit[s[0]]; if(a.brief)rows.push([v.name,p.name,'Audit '+s[0]+' brief',s[1],a.brief,'']);
+      Object.entries(a.fields).forEach(([k,val])=>{ if(val&&String(val).trim())rows.push([v.name,p.name,'Audit '+s[0],k,val,'']); }); });
+    RISK.forEach(([k,label])=>{ if(p.risk[k])rows.push([v.name,p.name,'Risk',label,p.risk[k]+' ('+RLABEL[p.risk[k]]+')','']); });
+    if(p.overall.level)rows.push([v.name,p.name,'Overall','Risk rating',p.overall.level+' ('+RLABEL[p.overall.level]+')','']);
+    if(p.overall.comment)rows.push([v.name,p.name,'Overall','Comment',p.overall.comment,'']);
+    if(p.photos&&p.photos.length)rows.push([v.name,p.name,'Photos','Count',p.photos.length,'']);
+    if(p.photoNotes)rows.push([v.name,p.name,'Photos','Notes',p.photoNotes,'']);
+  }));
+  return rows.map(r=>r.map(csvCell).join(',')).join('\n');
+}
+function exportCSV(onlyVenue){
+  const csv=csvForVenue(onlyVenue);
+  const stamp=new Date().toISOString().slice(0,10);
+  dl(`labosport_${onlyVenue?onlyVenue.name.replace(/\W+/g,'_'):'all'}_${stamp}.csv`,csv,'text/csv');
+  toast('CSV exported');
+}
+function exportJSON(){ dl('labosport_backup_'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(state,null,2),'application/json'); toast('Backup exported'); }
+function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const obj=JSON.parse(r.result); if(!obj.venues)throw new Error('not a backup'); if(confirm('Replace all current data with this backup?')){state=obj;save();go('home');toast('Backup restored');} }catch(e){ toast('⚠ Invalid backup file'); } }; r.readAsText(file); }
+
+/* ----------------------------- report generation ----------------------------- */
+// app audit field label -> template tag, per section
+const REPORT_MAP = {
+  A:{'Number of grounds staff':'a_staff','Sports played on the field':'a_sports','Levels of play':'a_levels','Games per year':'a_games','Practice sessions per year':'a_sessions'},
+  B:{'Full playing surface area':'b_area','Reinforcement installed?':'b_reinf','Reinforcement details':'b_reinf_details','Slope / gradient shape':'b_slope','Levelness assessment':'b_level'},
+  C:{'Pop-up irrigation present?':'c_popup','Number of sprinkler heads':'c_heads','Water supply source':'c_source','Water quality':'c_quality','Performance data collected?':'c_perf','Performance data details':'c_perf_details'},
+  D:{'Ponding / squelchy conditions?':'d_ponding','Typical duration after heavy rain':'d_duration','Occurrences per year':'d_occur','Avg closure days per season (wet)':'d_closure'},
+  E:{'Grass species / turf type(s)':'e_species','Disease or disorder identified?':'e_disease','Disease / disorder details':'e_disease_details'},
+  F:{'Tractor':'f_tractor','Cylinder mower':'f_cylinder','Pedestrian rotary mower':'f_rotary','Aerator (tractor / pedestrian)':'f_aerator','Boom sprayer':'f_boom','Top dresser':'f_topdresser','Line marker':'f_linemarker','Over-seeder / dimple-seeder':'f_overseed','Drag mat / brush':'f_dragmat'},
+  G:{'Fertilizer applications/yr (type & rate)':'g_fert','Herbicide applications per year':'g_herb','Other turf management activities':'g_other'},
+  H:{'Additional playability risks':'h_risks','General comments on surface / maintenance':'h_comments'},
+};
+const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','shear','ndvi','clegg','traction','moisture'];
+function today(){ return new Date().toISOString().slice(0,10); }
+function sanitize(s){ return (s||'').replace(/[^\w\-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40); }
+function reportName(v,p,ext){ return `Labosport_${sanitize(v.name)}_${sanitize(p.name)}_${today()}.${ext}`; }
+
+function buildReportData(v,p){
+  const d={ venue_name:v.name||'', cluster:v.cluster||'Charlotte', address:v.address||'', contact:v.contact||'',
+    position:v.position||'', email:v.email||'', phone:v.phone||'', grass:v.grass||'',
+    agronomist:state.tester||'', checked_by:'', visit_date:today() };
+  // overall
+  const ol=p.overall.level;
+  d.overall_label = ol?(RLABEL[ol].toUpperCase()+' RISK'):''; d.overall_score = ol?(ol+'/4'):''; d.overall_comment=p.overall.comment||'';
+  // risk
+  RISK.forEach(([k])=>{ const lv=p.risk[k]||0; d['risk_'+k+'_label']=lv?RLABEL[lv]:''; d['risk_'+k+'_score']=lv?String(lv):''; });
+  // results
+  RES_KEYS.forEach(k=>{ const t=TKEY[k]; const st=stats(p.tests[k].values);
+    d['res_'+k+'_avg']=st.avg!=null?fmt(st.avg,t.unit):''; d['res_'+k+'_var']=st.varPct!=null?String(st.varPct):''; d['res_'+k+'_cmt']=p.tests[k].comment||''; });
+  // audit fields
+  AUDIT.forEach(s=>{ const map=REPORT_MAP[s[0]]||{}; const f=p.audit[s[0]].fields;
+    Object.keys(map).forEach(label=>{ const val=f[label]; if(val!=null&&String(val).trim())d[map[label]]=String(val); }); });
+  return d;
+}
+function dlBlob(name,blob){ const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1500); }
+
+const WHITE_PX='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVR4nGP8//8/AwwwMSABFA4Aby0DAyMYAwQAAAAASUVORK5CYII=';
+function b64ToArrayBuffer(dataUrl){ const i=dataUrl.indexOf('base64,'); const bin=atob(dataUrl.slice(i+7)); const len=bin.length; const u=new Uint8Array(len); for(let j=0;j<len;j++)u[j]=bin.charCodeAt(j); return u.buffer; }
+function fitBox(w,h,maxW,maxH){ const s=Math.min(maxW/w,maxH/h); return [Math.round(w*s),Math.round(h*s)]; }
+
+/* render one test's pitch map onto a canvas region */
+function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key){
+  const pos=testPositions(p,key), vals=p.tests[key].values, pad=w*0.04;
+  ctx.fillStyle='#cfe8d6'; ctx.fillRect(ox+pad,oy+pad,w-2*pad,h-2*pad);
+  ctx.strokeStyle='#9cc9ad'; ctx.lineWidth=2; ctx.strokeRect(ox+pad,oy+pad,w-2*pad,h-2*pad);
+  ctx.beginPath(); ctx.moveTo(ox+w/2,oy+pad); ctx.lineTo(ox+w/2,oy+h-pad); ctx.stroke();
+  ctx.setLineDash([5,5]); [0.22,0.78].forEach(fx=>{const x=ox+pad+(w-2*pad)*fx; ctx.beginPath(); ctx.moveTo(x,oy+pad); ctx.lineTo(x,oy+h-pad); ctx.stroke();}); ctx.setLineDash([]);
+  const r=Math.max(9,w*0.028);
+  pos.forEach((pp,k)=>{ const x=ox+pad+pp[0]*(w-2*pad), y=oy+pad+pp[1]*(h-2*pad), done=vals[k]!=null;
+    const lbl=done?shortNum(vals[k]):String(k+1), L=lbl.length;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=done?'#1f7a4d':'#fff'; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=done?'#155c39':'#c2cad2'; ctx.stroke();
+    ctx.fillStyle=done?'#fff':'#6b7785'; ctx.font='bold '+Math.round(r*(L<=2?1.05:(L===3?0.82:0.68)))+'px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl,x,y); });
+}
+/* composite image of all test maps for the report appendix; returns {dataUrl,w,h} */
+function buildTestMapsImage(p){
+  const cols=2, cellW=600, mapH=234, titleH=34, gap=18, rows=Math.ceil(TESTS.length/cols);
+  const W=cols*cellW+gap*(cols+1), H=rows*(mapH+titleH+gap)+gap;
+  const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+  TESTS.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
+    const st=stats(p.tests[t.key].values);
+    ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
+    drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key);
+  });
+  return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
+}
+
+function buildPitchReportData(v,p){
+  const data=buildReportData(v,p), sizeMap={};
+  for(let i=0;i<6;i++){ const ph=p.photos[i], key='photo'+(i+1);
+    if(ph){ data[key]=ph.dataUrl; sizeMap[ph.dataUrl]=fitBox(ph.w||240,ph.h||160,250,185); }
+    else { data[key]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
+  data.photo_notes=p.photoNotes||'';
+  try{ const tm=buildTestMapsImage(p); data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
+  catch(e){ data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+  return {data,sizeMap};
+}
+function renderReportZip(buf,data,sizeMap,withImages){
+  const modules=[];
+  if(withImages && window.ImageModule){ modules.push(new window.ImageModule({centered:true,
+    getImage:tag=>new Uint8Array(b64ToArrayBuffer(tag)), getSize:(img,tag)=>sizeMap[tag]||[235,150]})); }
+  const doc=new window.docxtemplater(new window.PizZip(buf),{modules,paragraphLoop:true,linebreaks:true,delimiters:{start:'{',end:'}'},nullGetter:()=>''});
+  doc.render(data);
+  return doc.getZip();
+}
+const DOCX_MIME='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+function dataUrlToUint8(dataUrl){ return new Uint8Array(b64ToArrayBuffer(dataUrl)); }
+async function buildVenueWordBlob(v, pitchesArr){
+  const pitches=pitchesArr&&pitchesArr.length?pitchesArr:v.pitches;
+  const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')');
+  const buf=await res.arrayBuffer();
+  const built=pitches.map(p=>buildPitchReportData(v,p));
+  function make(withImages){ const zips=built.map(d=>renderReportZip(buf,d.data,d.sizeMap,withImages));
+    const merged=(zips.length>1 && window.mergeDocxZips)?window.mergeDocxZips(zips):zips[0];
+    return merged.generate({type:'blob',mimeType:DOCX_MIME}); }
+  try{ return make(true); }catch(e){ console.warn('publish: image render failed, text-only',e); return make(false); }
+}
+async function publishVenueDrive(v){
+  if(!window.GDrive){ toast('Sync module not loaded'); return; }
+  if(!GDrive.getClientId()){ toast('Set up Google Drive in the Data tab first'); go('settings'); return; }
+  toast('<span class="spin"></span> Publishing “'+v.name+'” to Drive…');
+  try{
+    const files=[];
+    files.push({name:sanitize(v.name)+'_data_'+today()+'.csv', content:csvForVenue(v), mime:'text/csv'});
+    files.push({name:'Labosport_'+sanitize(v.name)+'_report_'+today()+'.docx', content:await buildVenueWordBlob(v,v.pitches), mime:DOCX_MIME});
+    v.pitches.forEach(p=>p.photos.forEach((ph,i)=>{ files.push({name:sanitize(p.name)+'_photo_'+(i+1)+'.jpg', content:dataUrlToUint8(ph.dataUrl), mime:'image/jpeg'}); }));
+    await GDrive.publishToSubfolder(v.name, files, (n,tot)=>toast('<span class="spin"></span> Publishing “'+v.name+'” to Drive… '+n+'/'+tot));
+    toast('Published “'+v.name+'” to Drive ✓ ('+files.length+' files)');
+  }catch(e){ console.error(e); toast('⚠ Publish failed: '+(e.message||e)); }
+}
+async function generateWord(v,pitchesArr){
+  if(!window.PizZip||!window.docxtemplater){ toast('⚠ Report engine still loading — try again in a moment'); return; }
+  const pitches=pitchesArr&&pitchesArr.length?pitchesArr:[pitch()];
+  toast('<span class="spin"></span> Building Word report'+(pitches.length>1?' ('+pitches.length+' pitches)':'')+'…');
+  let buf;
+  try{ const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')'); buf=await res.arrayBuffer(); }
+  catch(e){ console.error(e); toast('⚠ Report failed: '+(e.message||e)); return; }
+  const built=pitches.map(p=>buildPitchReportData(v,p));
+  const name = pitches.length>1 ? ('Labosport_'+sanitize(v.name)+'_all-pitches_'+today()+'.docx') : reportName(v,pitches[0],'docx');
+  function make(withImages){
+    const zips=built.map(d=>renderReportZip(buf,d.data,d.sizeMap,withImages));
+    const merged=(zips.length>1 && window.mergeDocxZips)?window.mergeDocxZips(zips):zips[0];
+    return merged.generate({type:'blob',mimeType:DOCX_MIME});
+  }
+  try{ dlBlob(name, make(true)); toast('Word report downloaded ✓'); }
+  catch(e1){ console.error('image render failed:',e1);
+    try{ dlBlob(name, make(false)); toast('Report made WITHOUT photos/maps — image step failed: '+(e1.name||'')+' '+String(e1.message||'').slice(0,50)); }
+    catch(e2){ console.error(e2); toast('⚠ Report failed: '+(e2.name||'')+' '+(e2.message||e2)); }
+  }
+}
+
+/* print-to-PDF report (HTML facsimile of the template; the .docx is the exact one) */
+function rrow(cells){ return '<tr>'+cells.map(c=>`<td>${c}</td>`).join('')+'</tr>'; }
+function reportSheet(v,p){
+  const E=esc; const ol=p.overall.level;
+  const riskRows=RISK.map(([k,label])=>{const lv=p.risk[k]||0;return rrow([E(label),lv?RLABEL[lv]:'—',lv?lv:'—']);}).join('');
+  const resRows=RES_KEYS.map(k=>{const t=TKEY[k],st=stats(p.tests[k].values);
+    return rrow([E(t.name),st.avg!=null?E(fmt(st.avg,t.unit)):'—',st.varPct!=null?st.varPct:'—',E(p.tests[k].comment||'')]);}).join('');
+  const appendix=AUDIT.map(s=>{const f=p.audit[s[0]].fields;const rows=s[4].map(([label])=>{const val=f[label];return rrow([E(label),val?E(val):'—']);}).join('');
+    return `<h3>Appendix ${s[0]} — ${E(s[1])}</h3><table class="t2">${rows}</table>`;}).join('');
+  const b=state.benchmark; let bench='';
+  if(b.benchId===p.id&&b.rationale) bench=`<h3>Benchmark selection</h3><p>${E(b.rationale)}</p>`;
+  const cmp=b.comparisons[p.id]; if(cmp&&(cmp.note||cmp.rel)) bench+=`<h3>Comparison vs benchmark</h3><p><b>${({worse:'Worse than',sim:'Similar to',better:'Better than'}[cmp.rel]||'')} benchmark.</b> ${E(cmp.note||'')}</p>`;
+  return `<div class="sheet">
+    <div class="hd"><div class="ttl">PITCH INSPECTION <span class="lb">REPORT</span></div><div class="muted">Labosport Group · ${E(today())}</div></div>
+    <div class="grid">
+      <div><div class="kv"><span class="k">Venue</span><b>${E(v.name)}</b></div>
+        <div class="kv"><span class="k">Pitch</span><b>${E(p.name)}</b></div>
+        <div class="kv"><span class="k">Cluster</span><span>${E(v.cluster||'Charlotte')}</span></div>
+        <div class="kv"><span class="k">Address</span><span>${E(v.address)||'—'}</span></div></div>
+      <div><div class="kv"><span class="k">Contact</span><span>${E(v.contact)||'—'}</span></div>
+        <div class="kv"><span class="k">Position</span><span>${E(v.position)||'—'}</span></div>
+        <div class="kv"><span class="k">Grass type</span><span>${E(v.grass)||'—'}</span></div>
+        <div class="kv"><span class="k">Agronomist</span><span>${E(state.tester)||'—'}</span></div></div>
+    </div>
+    <h2>1 · Overall assessment — venue</h2>
+    <p><span class="rate">${ol?E(RLABEL[ol].toUpperCase()+' RISK · '+ol+'/4'):'NOT RATED'}</span></p>
+    <p>${E(p.overall.comment)||'<span class="muted">No overall comment recorded.</span>'}</p>
+    <h2>2 · Detailed risk assessment by parameter</h2>
+    <table><tr><th>Parameter</th><th>Level of risk</th><th>Score</th></tr>${riskRows}</table>
+    <h2>3 · Results for pitch</h2>
+    <table><tr><th>Parameter</th><th>Average</th><th>Max variance (%)</th><th>Comments</th></tr>${resRows}</table>
+    ${bench?'<h2>Benchmark & comparison</h2>'+bench:''}
+    <h2>Appendix · Venue audit</h2>${appendix}
+  </div>`;
+}
+function reportHTML(v,pitches){
+  const sheets=pitches.map(p=>reportSheet(v,p)).join('');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(v.name)} report</title>
+  <style>
+    @page{size:A4;margin:14mm}
+    *{box-sizing:border-box} body{font-family:Arial,Helvetica,sans-serif;color:#28282A;font-size:11px;margin:0}
+    .hd{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #E92840;padding-bottom:8px;margin-bottom:10px}
+    .hd .ttl{font-size:18px;font-weight:800;letter-spacing:1px}
+    .lb{color:#E92840} .muted{color:#838384}
+    table{width:100%;border-collapse:collapse;margin:6px 0 14px}
+    td,th{border:1px solid #c9ccd0;padding:5px 7px;text-align:left;vertical-align:top}
+    th{background:#28282A;color:#fff;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+    h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;border-left:4px solid #E92840;padding-left:8px;margin:16px 0 6px}
+    h3{font-size:11px;margin:10px 0 3px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+    .kv{display:flex;justify-content:space-between;border-bottom:1px solid #eee;padding:3px 0}
+    .kv .k{color:#838384}
+    .rate{display:inline-block;background:#E92840;color:#fff;font-weight:800;padding:3px 10px;border-radius:4px}
+    .t2 td:first-child{width:46%;color:#444;background:#fafafa}
+    @media screen{body{background:#eee;padding:16px}.sheet{background:#fff;max-width:800px;margin:0 auto 16px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.15)}.noprint{margin:0 auto 12px;max-width:800px}}
+    @media print{.noprint{display:none}.sheet:not(:first-of-type){page-break-before:always}}
+    .pbtn{background:#E92840;color:#fff;border:none;padding:10px 16px;border-radius:8px;font-weight:700;cursor:pointer;font-size:14px}
+  </style></head><body>
+  <div class="noprint"><button class="pbtn" onclick="window.print()">⤓ Save as PDF / Print</button>${pitches.length>1?' &nbsp; <span class="muted">'+pitches.length+' pitches in sequence</span>':''}</div>
+  ${sheets}
+  <div class="noprint muted" style="max-width:800px;margin:0 auto">The Word (.docx) export matches the official Field Report Template exactly; this PDF is generated from the same data.</div>
+  </body></html>`;
+}
+function generatePDF(v,pitchesArr){
+  const pitches=pitchesArr&&pitchesArr.length?pitchesArr:[pitch()];
+  const w=window.open('','_blank');
+  if(!w){ toast('⚠ Allow pop-ups for PDF, or use the Word report'); return; }
+  w.document.write(reportHTML(v,pitches)); w.document.close();
+  try{ w.focus(); }catch(e){}
+}
+
+/* ----------------------------- init ----------------------------- */
+function init(){
+  load(); setupPdf();
+  $('backBtn').onclick=back;
+  $('settingsBtn').onclick=()=>go('settings');
+  document.querySelectorAll('.tabbar button').forEach(b=>b.onclick=()=>go(b.dataset.tab));
+  $('pdfInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)handleBrief(f);};
+  $('photoInput').onchange=e=>{const fs=e.target.files;e.target.value='';handlePhotos(fs);};
+  if($('photoLibInput'))$('photoLibInput').onchange=e=>{const fs=e.target.files;e.target.value='';handlePhotos(fs);};
+  $('importInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importJSON(f);};
+  // Google Drive two-way sync
+  if(window.GDrive){
+    GDrive.configure({
+      getState:()=>state,
+      applyState:(obj)=>{ if(!obj||!obj.venues)return; state=obj; if(!state.benchmark)state.benchmark={benchId:'',rationale:'',comparisons:{}}; if(!state.updatedAt)state.updatedAt=Date.now();
+        CUR=null; CURP=0; stack=['home']; save(false,{keepStamp:true,noSync:true}); render(); },
+      onStatus:(m,kind)=>{ if(kind!=='muted') toast(m); const e=$('syncStatus'); if(e&&cur()==='settings') e.innerHTML=m; }
+    });
+    GDrive.autoStart();
+  }
+  // Firebase live team sync
+  if(window.FB){
+    FB.configure({
+      getState:()=>state,
+      applyRemoteVenue:applyRemoteVenue,
+      removeRemoteVenue:removeRemoteVenue,
+      onStatus:(m,kind)=>{ if(kind!=='muted') toast(m); const e=$('fbStatus'); if(e&&cur()==='settings') e.innerHTML=m; }
+    });
+    FB.autoStart();
+  }
+  render();
+  if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+}
+document.addEventListener('DOMContentLoaded',init);
