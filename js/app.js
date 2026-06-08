@@ -19,6 +19,16 @@ const TESTS = [
 ];
 const TKEY = Object.fromEntries(TESTS.map(t=>[t.key,t]));
 
+// Grouped tests: several metrics recorded at the SAME shared positions, entered together on one screen.
+// Data still lives in each member's own tests[key] bucket, so reports/CSV/results are unchanged.
+const GROUPS = [
+  {key:'turf', name:'Turf cover, weed & height', n:3, members:['turf_cover','weed','turf_height']},
+];
+const GKEY = Object.fromEntries(GROUPS.map(g=>[g.key,g]));
+const GROUP_OF = {}; GROUPS.forEach(g=>g.members.forEach(m=>GROUP_OF[m]=g));   // memberKey -> group
+const GMETRIC_LABEL = {turf_cover:'Turf cover', weed:'Weed', turf_height:'Height'};
+function metricShort(k){ return GMETRIC_LABEL[k] || (TKEY[k]?TKEY[k].name:k); }
+
 // audit sections A-H: [code, title, hint, briefParam, fields]
 const YN = 'yn', TXT='text', AREA='area', NUM='num';
 const AUDIT = [
@@ -385,6 +395,7 @@ function render(){
   else if(r==='venue'){ const v=venue(); title=v.name; sub=v.pitches[CURP]?v.pitches[CURP].name:''; app.innerHTML=scrVenue(); }
   else if(r.startsWith('audit:')){ const s=AUDIT.find(a=>a[0]===r.split(':')[1]); title=s[0]+'. '+s[1]; sub='Venue audit'; app.innerHTML=scrAudit(r.split(':')[1]); }
   else if(r.startsWith('test:')){ const t=TKEY[r.split(':')[1]]; title=t.name; sub='On-site testing'; app.innerHTML=scrTest(t.key); }
+  else if(r.startsWith('grp:')){ const g=GKEY[r.split(':')[1]]; title=g.name; sub='On-site testing'; app.innerHTML=scrGroup(g.key); }
   else if(r==='overall'){ title='Overall assessment'; sub=venue().name; app.innerHTML=scrOverall(); }
   else if(r==='risk'){ title='Risk assessment'; sub=venue().name; app.innerHTML=scrRisk(); }
   else if(r==='results'){ title='Results summary'; sub=venue().name; app.innerHTML=scrResults(); }
@@ -472,7 +483,18 @@ function scrVenue(){
       ${complete?'<span class="tick">✓</span>':(p.audit[s[0]].brief?'<span class="pill">brief</span>':'<span class="chev">›</span>')}</div>`;
   }).join('');
 
+  const shownGroups=new Set();
   const testRows=TESTS.map(t=>{
+    const g=GROUP_OF[t.key];
+    if(g){   // collapse all members into a single combined row, rendered at the first member's slot
+      if(shownGroups.has(g.key)) return '';
+      shownGroups.add(g.key);
+      let done=0,total=0; g.members.forEach(m=>{ done+=stats(p.tests[m].values).done; total+=TKEY[m].n; });
+      const status=done?`<span class="pill">${done}/${total}</span>`:'<span class="chev">›</span>';
+      return `<div class="row" data-go="grp:${g.key}"><div class="ic">⬡</div>
+        <div class="meta"><div class="t">${esc(g.name)}</div>
+        <div class="d">${g.n} shared location${g.n>1?'s':''} · ${g.members.length} readings each</div></div>${status}</div>`;
+    }
     const st=stats(p.tests[t.key].values);
     const status=st.done?`<span class="pill">${st.done}/${t.n}</span>`:'<span class="chev">›</span>';
     return `<div class="row" data-go="test:${t.key}"><div class="ic">⬡</div>
@@ -562,6 +584,34 @@ function scrTest(key){
         <textarea id="testComment" placeholder="e.g. lower readings in the droughted southern in-goal area…">${esc(td.comment)}</textarea></div></div>
     ${obsBox}
     ${nx?`<button class="btn primary" id="nextTest">Next test: ${esc(nx.name)} →</button>`:''}
+    <button class="btn ghost" data-back="1">Done</button>`;
+}
+
+// combined entry for a group of metrics sharing the same positions (turf cover, weed, height)
+function scrGroup(gkey){
+  const g=GKEY[gkey]; const p=pitch();
+  const method=g.members.map(k=>p.tests[k].method).find(x=>x&&x.trim())||'';
+  const comment=g.members.map(k=>p.tests[k].comment).find(x=>x&&x.trim())||'';
+  const statCells=g.members.map(k=>{ const st=stats(p.tests[k].values);
+    return `<div class="s"><div class="l">${esc(metricShort(k))} avg</div><div class="n" id="gavg_${k}">${st.avg!=null?fmt(st.avg,''):'—'}</div></div>`;}).join('');
+  const rows=Array.from({length:g.n},(_,i)=>{
+    const cells=g.members.map(k=>{ const t=TKEY[k]; const v=p.tests[k].values[i];
+      return `<label class="grpcell ${v!=null?'done':''}"><span class="gl">${esc(metricShort(k))}</span>
+        <input data-gpos="${i}" data-gkey="${k}" inputmode="decimal" enterkeyhint="next" placeholder="–" value="${v!=null?v:''}"><span class="gu">${esc(t.unit)||'&nbsp;'}</span></label>`;}).join('');
+    return `<div class="grprow"><div class="grppn">P${i+1}</div><div class="grpcells">${cells}</div></div>`;
+  }).join('');
+  return `<div class="hint">${esc(g.name)} · ${g.n} shared locations · record all three at each ⬡ <span class="saved" id="savedFlag">saved ✓</span></div>
+    ${pitchSVGGroup(g)}
+    <div class="leg"><span><i class="dot" style="background:var(--green)"></i> all 3 recorded</span><span><i class="dot" style="background:#bfe0cc"></i> partial</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
+    <div class="card" style="padding:0">
+      <div class="stat">${statCells}</div>
+      <div class="grpentry">${rows}</div>
+    </div>
+    <div class="card" style="padding:0">
+      <div class="field"><label>Method used to collect this data</label>
+        <input id="grpMethod" inputmode="text" placeholder="e.g. visual % estimate in 0.25 m² quadrat; sward height by ruler" value="${esc(method)}"></div>
+      <div class="field"><label>Comments / observations</label>
+        <textarea id="grpComment" placeholder="e.g. weed concentrated in southern in-goal; sward thinning near goalmouth…">${esc(comment)}</textarea></div></div>
     <button class="btn ghost" data-back="1">Done</button>`;
 }
 
@@ -726,11 +776,8 @@ function randomPositions(n){ const pts=[], minD=Math.max(0.08,0.5/Math.sqrt(n));
       if(pts.every(p=>Math.hypot(p[0]-c[0],(p[1]-c[1])*0.4)>minD)){ best=c; break; } if(!best) best=c; }
     pts.push(best); }
   return pts; }
-function pitchSVG(key){
-  const p=pitch(), t=TKEY[key], pos=testPositions(p,key), vals=p.tests[key].values;
-  const dots=pos.map((pp,k)=>{const x=PPAD+pp[0]*(PW-2*PPAD),y=PPAD+pp[1]*(PH-2*PPAD);const done=vals[k]!=null;
-    const lbl=done?shortNum(vals[k]):String(k+1);
-    return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${done?'#1f7a4d':'#fff'}" stroke="${done?'#155c39':'#c2cad2'}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="${dotFontSVG(lbl)}" font-weight="700" text-anchor="middle" fill="${done?'#fff':'#6b7785'}">${esc(lbl)}</text></g>`;}).join('');
+// static field markup (everything except the numbered dots) — shared by single-test and grouped views
+function pitchFieldInner(){
   const ix=PPAD, iy=PPAD, iw=PW-2*PPAD, ih=PH-2*PPAD;
   const X=f=>(ix+f*iw).toFixed(1), Y=f=>(iy+f*ih).toFixed(1);
   const W='#ffffff', vT=Y(0), vB=Y(1);
@@ -749,17 +796,43 @@ function pitchSVG(key){
   // dashed 5 m and 15 m lines running the length of the pitch
   const hline=f=>`<line x1="${X(.02)}" y1="${Y(f)}" x2="${X(.98)}" y2="${Y(f)}" stroke="${W}" stroke-width="1" stroke-dasharray="5 6" opacity=".85"/>`;
   const horizontals=[hline(.07),hline(.21),hline(.79),hline(.93)].join('');
-  return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#23823f;border-radius:12px;border:1px solid #1c6e34">
-    <rect x="${ix}" y="${iy}" width="${iw}" height="${ih}" fill="#36a058"/>
+  return `<rect x="${ix}" y="${iy}" width="${iw}" height="${ih}" fill="#36a058"/>
     ${inGoal}
     <rect x="${ix}" y="${iy}" width="${iw}" height="${ih}" fill="none" stroke="${W}" stroke-width="1.8"/>
-    ${verticals}${horizontals}${posts}${dots}</svg></div>
+    ${verticals}${horizontals}${posts}`;
+}
+function pitchSVG(key){
+  const p=pitch(), pos=testPositions(p,key), vals=p.tests[key].values;
+  const dots=pos.map((pp,k)=>{const x=PPAD+pp[0]*(PW-2*PPAD),y=PPAD+pp[1]*(PH-2*PPAD);const done=vals[k]!=null;
+    const lbl=done?shortNum(vals[k]):String(k+1);
+    return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${done?'#1f7a4d':'#fff'}" stroke="${done?'#155c39':'#c2cad2'}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="${dotFontSVG(lbl)}" font-weight="700" text-anchor="middle" fill="${done?'#fff':'#6b7785'}">${esc(lbl)}</text></g>`;}).join('');
+  return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#23823f;border-radius:12px;border:1px solid #1c6e34">
+    ${pitchFieldInner()}${dots}</svg></div>
     <div class="draghint">Drag any numbered dot to the spot you actually tested</div>
     <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="randDots">🎲 Randomize</button> <button class="btn sm ghost" id="resetDots">↺ Reset to default</button></div>`;
 }
+
+/* ---- grouped tests: shared positions across all members ---- */
+function groupPositions(p,g){
+  for(const k of g.members){ const td=p.tests&&p.tests[k]; if(td&&td.positions&&td.positions.length===g.n) return td.positions; }
+  return defaultPositions(g.n);
+}
+function setGroupPositions(p,g,pos){ g.members.forEach(k=>{ if(p.tests[k]) p.tests[k].positions = pos ? pos.map(a=>a.slice()) : null; }); }
+function groupDotStyle(p,g,k){ const cnt=g.members.filter(m=>p.tests[m].values[k]!=null).length; const full=cnt===g.members.length, part=cnt>0&&!full;
+  return {fill:full?'#1f7a4d':(part?'#bfe0cc':'#fff'), stroke:full?'#155c39':'#c2cad2', text:full?'#fff':'#6b7785'}; }
+function pitchSVGGroup(g){
+  const p=pitch(), pos=groupPositions(p,g);
+  const dots=pos.map((pp,k)=>{ const x=PPAD+pp[0]*(PW-2*PPAD), y=PPAD+pp[1]*(PH-2*PPAD); const s=groupDotStyle(p,g,k);
+    return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${s.fill}" stroke="${s.stroke}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="9" font-weight="700" text-anchor="middle" fill="${s.text}">${k+1}</text></g>`;}).join('');
+  return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#23823f;border-radius:12px;border:1px solid #1c6e34">
+    ${pitchFieldInner()}${dots}</svg></div>
+    <div class="draghint">Drag a numbered dot to the spot you tested — all three readings share these locations</div>
+    <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="grpRand">🎲 Randomize</button> <button class="btn sm ghost" id="grpReset">↺ Reset to default</button></div>`;
+}
 function bindPitchDrag(){
   const svg=$('pitchSvg'); if(!svg) return;
-  const key=cur().split(':')[1], t=TKEY[key]; let dragging=null;
+  const key=cur().split(':')[1], t=TKEY[key]; if(!t) return;   // group screens use bindGroupPitchDrag instead
+  let dragging=null;
   function frac(e){ const r=svg.getBoundingClientRect(); const ux=(e.clientX-r.left)/r.width*PW, uy=(e.clientY-r.top)/r.height*PH;
     let fx=(ux-PPAD)/(PW-2*PPAD), fy=(uy-PPAD)/(PH-2*PPAD); return [Math.max(0,Math.min(1,fx)),Math.max(0,Math.min(1,fy))]; }
   function ensure(){ const td=pitch().tests[key]; if(!td.positions||td.positions.length!==t.n) td.positions=defaultPositions(t.n); return td.positions; }
@@ -770,6 +843,40 @@ function bindPitchDrag(){
     const tx=g.querySelector('text'); tx.setAttribute('x',x); tx.setAttribute('y',y+3.5); });
   function end(){ if(dragging!=null){ dragging=null; save(true); } }
   svg.addEventListener('pointerup',end); svg.addEventListener('pointercancel',end);
+}
+function bindGroupPitchDrag(g){
+  const svg=$('pitchSvg'); if(!svg) return; let dragging=null;
+  function frac(e){ const r=svg.getBoundingClientRect(); const ux=(e.clientX-r.left)/r.width*PW, uy=(e.clientY-r.top)/r.height*PH;
+    let fx=(ux-PPAD)/(PW-2*PPAD), fy=(uy-PPAD)/(PH-2*PPAD); return [Math.max(0,Math.min(1,fx)),Math.max(0,Math.min(1,fy))]; }
+  function ensure(){ const p=pitch(); let pos=groupPositions(p,g); if(!pos||pos.length!==g.n) pos=defaultPositions(g.n); pos=pos.map(a=>a.slice()); setGroupPositions(p,g,pos); return groupPositions(p,g); }
+  svg.querySelectorAll('.dot').forEach(d=>d.addEventListener('pointerdown',ev=>{ ev.preventDefault(); dragging=+d.dataset.i; ensure(); try{svg.setPointerCapture(ev.pointerId);}catch(e){} }));
+  svg.addEventListener('pointermove',ev=>{ if(dragging==null)return; const pos=ensure(); pos[dragging]=frac(ev); setGroupPositions(pitch(),g,pos);
+    const x=PPAD+pos[dragging][0]*(PW-2*PPAD), y=PPAD+pos[dragging][1]*(PH-2*PPAD), d=svg.querySelector('.dot[data-i="'+dragging+'"]');
+    d.querySelector('circle').setAttribute('cx',x); d.querySelector('circle').setAttribute('cy',y);
+    const tx=d.querySelector('text'); tx.setAttribute('x',x); tx.setAttribute('y',y+3.5); });
+  function end(){ if(dragging!=null){ dragging=null; save(true); } }
+  svg.addEventListener('pointerup',end); svg.addEventListener('pointercancel',end);
+}
+function bindGroupEntry(g){
+  const app=$('app');
+  app.querySelectorAll('[data-gpos]').forEach(inp=>{
+    inp.oninput=()=>{
+      const i=+inp.dataset.gpos, k=inp.dataset.gkey, raw=inp.value.trim();
+      const val=raw===''?null:parseFloat(raw.replace(',','.')); pitch().tests[k].values[i]=(val==null||isNaN(val))?null:val;
+      const stored=pitch().tests[k].values[i];
+      inp.closest('.grpcell').classList.toggle('done',stored!=null);
+      const ae=$('gavg_'+k); if(ae){ const st=stats(pitch().tests[k].values); ae.textContent=st.avg!=null?fmt(st.avg,''):'—'; }
+      const d=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // recolour the shared dot by completeness
+      if(d){ const s=groupDotStyle(pitch(),g,i); d.querySelector('circle').setAttribute('fill',s.fill); d.querySelector('circle').setAttribute('stroke',s.stroke); d.querySelector('text').setAttribute('fill',s.text); }
+      save(true);
+    };
+    inp.onkeydown=ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); const list=[...app.querySelectorAll('[data-gpos]')]; const nx=list[list.indexOf(inp)+1]; if(nx){nx.focus(); if(nx.select)nx.select();} else inp.blur(); } };
+  });
+  if($('grpMethod'))$('grpMethod').oninput=()=>{ const v=$('grpMethod').value; g.members.forEach(k=>pitch().tests[k].method=v); save(true); };
+  if($('grpComment'))$('grpComment').oninput=()=>{ const v=$('grpComment').value; g.members.forEach(k=>pitch().tests[k].comment=v); save(true); };
+  if($('grpRand'))$('grpRand').onclick=()=>{ setGroupPositions(pitch(),g,randomPositions(g.n)); save(true); render(); toast('Locations randomized'); };
+  if($('grpReset'))$('grpReset').onclick=()=>{ setGroupPositions(pitch(),g,null); save(true); render(); toast('Locations reset to default'); };
+  bindGroupPitchDrag(g);
 }
 
 /* ----------------------------- event binding (per render) ----------------------------- */
@@ -808,11 +915,9 @@ function bind(){
     };
     // Enter / keyboard "next" key → jump to the next position box (works on desktop + Android)
     inp.onkeydown=ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); posNavGo(1); } };
-    // Show the Next/Prev accessory bar on touch devices (iOS decimal pad has no return key)
-    inp.onfocus=()=>posNavShow(inp);
-    inp.onblur=()=>{ setTimeout(()=>{ const a=document.activeElement; if(!a||!a.matches||!a.matches('[data-pos]')) posNavHide(); },120); };
   });
   bindPitchDrag();
+  if(cur().startsWith('grp:')){ const g=GKEY[cur().split(':')[1]]; if(g) bindGroupEntry(g); }   // combined turf/weed/height entry
   if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); save(true); render(); toast('Positions randomized'); };
   if($('resetDots'))$('resetDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=null; save(true); render(); toast('Positions reset to default'); };
   if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const i=TESTS.findIndex(x=>x.key===key); const nx=TESTS[i+1]; if(nx)goReplace('test:'+nx.key); };

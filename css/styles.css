@@ -111,6 +111,20 @@ h2.sec{font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(-
 /* highlight the box that's currently being edited */
 .posbox:focus-within{border-color:var(--green);box-shadow:0 0 0 2px var(--green-l)}
 
+/* combined group entry (turf cover / weed / height at shared positions) */
+.grpentry{padding:8px 10px}
+.grprow{display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1px solid var(--line)}
+.grprow:last-child{border-bottom:none}
+.grppn{width:26px;flex:none;font-size:12px;font-weight:800;color:var(--muted);text-align:center}
+.grpcells{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;flex:1}
+.grpcell{border:1px solid var(--line);border-radius:10px;padding:5px 3px;text-align:center;background:#fff;display:flex;flex-direction:column;align-items:center}
+.grpcell.done{border-color:var(--green);background:var(--green-l)}
+.grpcell .gl{font-size:9px;color:var(--muted);font-weight:700;line-height:1.15;margin-bottom:2px}
+.grpcell input{width:100%;border:none;background:transparent;text-align:center;font-size:16px;font-weight:800;color:var(--ink);padding:1px 0}
+.grpcell input:focus{outline:none}
+.grpcell .gu{font-size:8.5px;color:var(--muted)}
+.grpcell:focus-within{border-color:var(--green);box-shadow:0 0 0 2px var(--green-l)}
+
 /* accessory bar pinned above the on-screen keyboard during value entry */
 .keynav{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:100%;max-width:460px;
   display:flex;align-items:center;gap:8px;padding:8px 10px;
