@@ -219,8 +219,9 @@ function load(){
       (v.pitches||[]).forEach(migratePitchTests); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
     try{ migrateBenchmark(state); }catch(e){}                     // fold old global benchmark tab into per-pitch fields
     try{ dedupeVenues(); }catch(e){}                              // collapse any same-name duplicate venues
+    initMedia();                                                 // open IndexedDB, migrate old photos out of localStorage, hydrate blobs back in
     return;}}catch(e){}
-  state=freshState(); save();
+  state=freshState(); save(); initMedia();
 }
 let saveTimer=null;
 function save(flash,opts){
@@ -232,12 +233,52 @@ function save(flash,opts){
     // save". Now a remote copy must be strictly newer than this local edit to win.
     const _v=state.venues&&state.venues.find(x=>x.id===CUR); if(_v) _v._ts=Date.now();
   }
-  try{ localStorage.setItem(LSKEY, JSON.stringify(state));
+  // Photos/brief-images live in IndexedDB (huge quota); localStorage holds only the small,
+  // blob-free state — so a few phone photos can't overflow the ~5MB localStorage budget and
+  // wipe the whole save. Falls back to the old (heavy) write until IndexedDB is confirmed open.
+  try{ localStorage.setItem(LSKEY, mediaOK ? JSON.stringify(state, mediaReplacer) : JSON.stringify(state));
     if(flash){const s=document.getElementById('savedFlag'); if(s){s.classList.add('show'); clearTimeout(saveTimer); saveTimer=setTimeout(()=>s.classList.remove('show'),900);} }
   }catch(e){ toast('⚠ Storage full — export a backup and remove some photos'); }
+  if(mediaOK) persistMedia();
   if(!opts.noSync && window.GDrive && GDrive.isConnected()) GDrive.schedulePush();
   if(!opts.noFB && window.FB && FB.isEnabled()) FB.schedulePush();
 }
+
+/* ----------------------------- media store (IndexedDB) ----------------------------- */
+// Keeps large base64 photo data OUT of the 5MB localStorage blob. In memory each photo keeps
+// its {id,dataUrl}; on disk localStorage stores only {id,w,h} (dataUrl stripped) and the blobs
+// live in IndexedDB keyed by photo id. Brief-image arrays are stored under 'brief:'+venueId.
+const MEDIA_DB='labosport_media', MEDIA_STORE='blobs';
+let mediaOK=false, _mediaDB=null, mediaSaved=new Set(), mediaBrief={};
+const mediaReplacer=(k,v)=> (k==='dataUrl'||k==='briefImages') ? undefined : v;   // drop blobs from the localStorage copy
+function mediaOpen(){ return _mediaDB || (_mediaDB=new Promise((res,rej)=>{
+  let req; try{ req=indexedDB.open(MEDIA_DB,1); }catch(e){ return rej(e); }
+  req.onupgradeneeded=()=>{ const d=req.result; if(!d.objectStoreNames.contains(MEDIA_STORE)) d.createObjectStore(MEDIA_STORE); };
+  req.onsuccess=()=>res(req.result); req.onerror=()=>rej(req.error);
+})); }
+function mediaTx(mode){ return mediaOpen().then(db=>db.transaction(MEDIA_STORE,mode).objectStore(MEDIA_STORE)); }
+function mediaGet(id){ return mediaTx('readonly').then(os=>new Promise((res,rej)=>{ const r=os.get(id); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); })); }
+function mediaSet(id,val){ return mediaTx('readwrite').then(os=>new Promise((res,rej)=>{ const r=os.put(val,id); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); })); }
+// visit every photo object {id,dataUrl} in the state (pitch photos + per-observation test photos)
+function eachPhoto(st,fn){ (st&&st.venues||[]).forEach(v=>(v.pitches||[]).forEach(p=>{
+  (p.photos||[]).forEach(ph=>fn(ph));
+  if(p.tests) Object.keys(p.tests).forEach(k=>{ const ph=p.tests[k]&&p.tests[k].photos; if(ph) Object.keys(ph).forEach(pos=>(ph[pos]||[]).forEach(fn)); });
+})); }
+// push any in-memory blobs not yet in IndexedDB (covers new photos + one-time migration of old localStorage photos)
+function persistMedia(){ if(!mediaOK) return Promise.resolve(); const jobs=[];
+  try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&ph.dataUrl&&!mediaSaved.has(ph.id)){ mediaSaved.add(ph.id); jobs.push(mediaSet(ph.id,ph.dataUrl).catch(()=>mediaSaved.delete(ph.id))); } });
+    (state.venues||[]).forEach(v=>{ const arr=v.briefImages; if(arr&&arr.length&&mediaBrief[v.id]!==arr.length){ mediaBrief[v.id]=arr.length; jobs.push(mediaSet('brief:'+v.id,arr.slice()).catch(()=>{ delete mediaBrief[v.id]; })); } });
+  }catch(e){}
+  return Promise.all(jobs);
+}
+// pull blobs back into the in-memory state for photos/brief-images that were stored lite (no dataUrl)
+function hydrateMedia(){ const jobs=[];
+  try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&!ph.dataUrl){ jobs.push(mediaGet(ph.id).then(d=>{ if(d){ ph.dataUrl=d; mediaSaved.add(ph.id); } })); } });
+    (state.venues||[]).forEach(v=>{ if(!v.briefImages||!v.briefImages.length){ jobs.push(mediaGet('brief:'+v.id).then(arr=>{ if(arr&&arr.length){ v.briefImages=arr; mediaBrief[v.id]=arr.length; } })); } });
+  }catch(e){}
+  return Promise.all(jobs).then(()=>{ try{ render(); }catch(e){} });
+}
+function initMedia(){ mediaOpen().then(()=>{ mediaOK=true; try{ persistMedia(); }catch(e){} return hydrateMedia(); }).catch(()=>{ mediaOK=false; }); }
 /* ---- incoming team-sync changes from Firestore (merge, preserving local photos) ---- */
 const ENTRY_ROUTES=/^(test:|audit:|overall|risk|venueform|photos)/;
 function applyRemoteVenue(remote){
@@ -497,7 +538,7 @@ function scrTest(key){
   if(t.obsPhotos){
     const ph=td.photos||{};
     const rows=td.values.map((v,i)=>{
-      const list=(ph[i]||[]).map(x=>`<div class="obsphoto"><img src="${x.dataUrl}" alt=""><button class="del" data-delobs="${key}|${i}|${x.id}">✕</button></div>`).join('');
+      const list=(ph[i]||[]).map(x=>`<div class="obsphoto"><img src="${x.dataUrl||''}" alt=""><button class="del" data-delobs="${key}|${i}|${x.id}">✕</button></div>`).join('');
       return `<div class="obsrow"><div class="obshd"><b>P${i+1}</b>${v!=null?` · ${esc(shortNum(v))} mm`:' · no reading yet'}<button class="btn sm ghost" data-obsadd="${i}" style="float:right">＋ Photo</button></div>
         <div class="obsgrid">${list||'<span class="hint" style="padding:0">No photos yet</span>'}</div></div>`;
     }).join('');
@@ -556,7 +597,7 @@ function scrResults(){
 
 function scrPhotos(){
   const p=pitch();
-  const items=p.photos.map(ph=>`<div class="photo"><img src="${ph.dataUrl}" alt=""><button class="del" data-delphoto="${ph.id}">✕</button></div>`).join('');
+  const items=p.photos.map(ph=>`<div class="photo"><img src="${ph.dataUrl||''}" alt=""><button class="del" data-delphoto="${ph.id}">✕</button></div>`).join('');
   return `<div class="hint">Add photos with the camera or from your library. The first 6 fill the report's photo grid (Overview, Close up, Photo 3–6). <span class="saved" id="savedFlag">saved ✓</span></div>
     <div class="card" style="padding:0"><div class="photogrid">${items}<div class="photo-add" id="addPhoto">📷<span>Take photo</span></div></div>
       <div class="field"><label>Additional photos / notes &amp; comments (report)</label><textarea id="photoNotes" placeholder="Notes that appear under the photo grid…">${esc(p.photoNotes||'')}</textarea></div></div>
@@ -934,7 +975,9 @@ async function addPhotoFile(file, target){
   const c=document.createElement('canvas'); c.width=Math.round(w); c.height=Math.round(h);
   c.getContext('2d').drawImage(src,0,0,c.width,c.height);
   if(src.close)try{src.close();}catch(e){}
-  (target||pitch().photos).push({id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:c.width,h:c.height});
+  const photo={id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:c.width,h:c.height};
+  (target||pitch().photos).push(photo);
+  if(mediaOK){ try{ await mediaSet(photo.id,photo.dataUrl); mediaSaved.add(photo.id); }catch(e){} }   // durable in IndexedDB before we report success
   return true;
 }
 function pickImageFiles(fileList){
