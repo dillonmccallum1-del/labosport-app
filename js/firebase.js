@@ -11,7 +11,7 @@
   let app=null, auth=null, db=null, user=null, unsub=null, started=false;
   let hooks={ getState:()=>({venues:[]}), onStatus:()=>{}, applyRemoteVenue:()=>{}, removeRemoteVenue:()=>{} };
   let lastSeen={};                      // venueId -> content hash (excludes photos/_ts)
-  let pushTimer=null;
+  let pushTimer=null, wired=false;
 
   function load(){ try{ return Object.assign({config:null,enabled:false}, JSON.parse(localStorage.getItem(CFG_KEY)||'{}')); }catch(e){ return {config:null,enabled:false}; } }
   function saveCfg(){ try{ localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); }catch(e){} }
@@ -39,6 +39,13 @@
         if(u){ cfg.enabled=true; saveCfg(); status('Team sync on · '+(u.email||u.uid),'ok'); startListener(); schedulePush(); }
         else { stopListener(); status('Signed out of team sync','muted'); }
       });
+      // Flush pending edits the instant the app is hidden/closed (don't let them die in the
+      // debounce window), and re-push when the network returns. This is the main reason edits
+      // "didn't reach others": the user closed/switched away before the timer fired.
+      if(!wired){ wired=true;
+        if(typeof document!=='undefined') document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flush(); });
+        if(typeof window!=='undefined'){ window.addEventListener('pagehide',flush); window.addEventListener('online',()=>schedulePush()); }
+      }
       return true;
     }catch(e){ console.error(e); status('⚠ Firebase init failed: '+(e.message||e),'warn'); return false; }
   }
@@ -61,11 +68,13 @@
     (st.venues||[]).forEach(v=>{ ids.add(v.id);
       const h=contentHash(v);
       if(lastSeen[v.id]!==h){ lastSeen[v.id]=h; const doc=forFirestore(v); doc._ts=Date.now(); doc._by=(user.email||user.uid);
-        db.collection('venues').doc(v.id).set(doc).catch(e=>status('⚠ Push failed: '+(e.message||e),'warn')); }
+        // On failure, un-mark so the change is retried — otherwise one blip strands it forever.
+        db.collection('venues').doc(v.id).set(doc).catch(e=>{ delete lastSeen[v.id]; status('⚠ Push failed (will retry): '+(e.message||e),'warn'); clearTimeout(pushTimer); pushTimer=setTimeout(pushChanges,5000); }); }
     });
-    Object.keys(lastSeen).forEach(id=>{ if(!ids.has(id)){ delete lastSeen[id]; db.collection('venues').doc(id).delete().catch(()=>{}); } });
+    Object.keys(lastSeen).forEach(id=>{ if(!ids.has(id)){ const prev=lastSeen[id]; delete lastSeen[id]; db.collection('venues').doc(id).delete().catch(()=>{ lastSeen[id]=prev; }); } });
   }
-  function schedulePush(){ if(!cfg.enabled||!user) return; clearTimeout(pushTimer); pushTimer=setTimeout(pushChanges,3000); }
+  function flush(){ clearTimeout(pushTimer); pushChanges(); }
+  function schedulePush(){ if(!cfg.enabled||!user) return; clearTimeout(pushTimer); pushTimer=setTimeout(pushChanges,700); }
   // call after a remote venue is merged locally so we don't immediately echo it back
   function markSeen(v){ if(v&&v.id) lastSeen[v.id]=contentHash(v); }
 
@@ -126,7 +135,7 @@
     isConfigured(){ return !!activeConfig(); },
     isSignedIn(){ return !!user; },
     userEmail(){ return user?(user.email||user.uid):''; },
-    connect, connectEmail, disconnect, schedulePush, autoStart, markSeen,
+    connect, connectEmail, disconnect, schedulePush, flush, autoStart, markSeen,
     deleteVenueDoc(id){ try{ delete lastSeen[id]; if(db&&id) db.collection('venues').doc(id).delete().catch(()=>{}); }catch(e){} },
     syncNow(){ pushChanges(); }
   };
