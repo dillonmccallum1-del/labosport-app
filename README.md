@@ -50,10 +50,17 @@ reopen if it looks stale).
 ## What it does now
 
 - **Two-part inspection per pitch:** venue audit (questionnaire, Appendices A–H) + on-site testing.
+  Each audit section shows a green **✓** only once **every** question in it is answered — a partial
+  section stays unmarked (or keeps its "brief" tag if it was autofilled).
 - **Real data entry** for all tests at the right number of positions:
-  traction, Clegg, NDVI and soil moisture (12 each); shear (6); turf cover, weed, height,
-  infiltration, soil properties (3 each). Priority tests are flagged. Averages and max variance
-  update live as you type.
+  Clegg, surface traction, NDVI and **both soil-moisture depths** (25 each, on an even 5×5 grid);
+  root-zone shear strength (12); turf cover, weed, height, infiltration, soil properties (3 each).
+  Priority tests are flagged. Averages and max variance update live as you type.
+- **Two soil-moisture depths:** moisture is collected twice — **38 mm (1.5 in)** and **76 mm (3 in)** —
+  each as its own test with its own pitch map, average, variance, and report row.
+- **Rugby pitch diagram for test maps:** position maps are drawn on a proper rugby field (try lines,
+  22 m and 10 m lines, halfway line, 5 m/15 m dashed lines, shaded in-goal zones, goal posts). Dots are
+  draggable, with Randomize/Reset.
 - **Brief autofill:** tap *Upload pitch brief (PDF)* and pick a Labosport brief — it reads the
   venue details, World Rugby notes, and every parameter comment, and fills them in.
 - **Multiple pitches per venue**, risk rating per parameter, overall assessment, and photo capture.
@@ -69,6 +76,11 @@ reopen if it looks stale).
 The Word report fills in automatically: header, overall assessment, risk table, results summary, all
 audit appendices, **and the photo grid** — the first six photos you capture become Overview, Close up,
 and Photo 3–6, with your notes printed underneath.
+
+It also adds **Appendix K — Soil profile / thatch photos** at the end, with the soil photos grouped by
+observation position and each labeled with its thatch reading (e.g. "Position P1 · 10 mm thatch"). The
+appendix only appears when soil photos exist — pitches without them get no blank page, and in a combined
+multi-pitch report each pitch gets its own Appendix K only if it has soil photos.
 
 The two Charlotte venues (Mecklenburg County Sportsplex and Ramblewood Soccer Complex) are already
 loaded from their briefs so you can start immediately.
@@ -200,10 +212,45 @@ public/not-secret, so it's safe to commit; your data is protected by the securit
 | File | Purpose |
 |------|---------|
 | `index.html` | App shell |
-| `app.js` | All app logic, screens, storage, export |
-| `briefParser.js` | Reads Labosport brief PDFs (verified against the Charlotte briefs) |
-| `gdrive.js` | Two-way Google Drive sync + per-venue folder publish |
-| `firebase.js` | Live team sync (Firebase Auth + Firestore) |
-| `styles.css` | Labosport-branded styling |
-| `manifest.webmanifest`, `sw.js` | Make it installable + offline |
+| `js/app.js` | All app logic, screens, storage, export |
+| `js/briefParser.js` | Reads Labosport brief PDFs (verified against the Charlotte briefs) |
+| `js/seedImages.js` | Built-in seed/venue images |
+| `js/gdrive.js` | Two-way Google Drive sync + per-venue folder publish |
+| `js/firebase.js` | Live team sync (Firebase Auth + Firestore) |
+| `js/firebase-config.js` | Your baked-in Firebase web config |
+| `js/mergeDocx.js` | Merges per-pitch reports into one combined .docx |
+| `css/styles.css` | Labosport-branded styling |
+| `libs/` | Vendored offline libraries (PizZip, docxtemplater, image module) |
+| `assets/` | Reference images (rugby pitch diagram, position-test examples) |
+| `report_template.docx` | The official Field Report Template the Word export fills in |
+| `manifest.webmanifest`, `sw.js` | Make it installable + offline (must stay at the repo root) |
 | `icons/` | App icons and logo |
+
+> **Folder layout note:** the source files are organized into `js/`, `css/`, `assets/`, `libs/`, and
+> `icons/`. `index.html`, `report_template.docx`, `manifest.webmanifest`, `sw.js`, and `.nojekyll` stay
+> at the repo root — `sw.js` and the manifest must be there for the service worker scope and PWA install
+> to work.
+
+---
+
+## Recent updates
+
+**Testing & data**
+- Soil moisture is now collected at **two depths — 38 mm (1.5 in) and 76 mm (3 in)** — each a separate
+  test with its own pitch map, average, variance, and report row.
+- **Clegg, surface traction, NDVI and both moisture depths moved to 25 positions** (even 5×5 grid).
+- **Root-zone shear strength moved from 6 to 12 positions** (same layout as the others); previously
+  collected shear data is migrated automatically to the 12-slot layout, keeping your first six readings.
+- Position maps are now drawn on a **proper rugby pitch diagram** instead of a plain rectangle.
+
+**Audit**
+- An audit section shows its green **✓ only when every question is answered** — partial sections stay
+  unmarked.
+
+**Reports**
+- The Word report now includes **Appendix K — Soil profile / thatch photos**, grouped by observation
+  position and labeled with each position's thatch reading. It's conditional: no soil photos → no
+  appendix and no blank page (per pitch in combined reports).
+
+**Project structure**
+- Source files reorganized into `js/`, `css/`, and `assets/` folders (see the table above).
