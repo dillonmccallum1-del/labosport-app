@@ -101,7 +101,7 @@ function newPitch(name){
   const tests={}; TESTS.forEach(t=>tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}});
   const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
   const risk={}; RISK.forEach(r=>risk[r[0]]=0);
-  return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},photos:[],photoNotes:''};
+  return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},bench:{role:'',note:''},photos:[],photoNotes:''};
 }
 function venueFromSeed(s){
   const v={id:seedId(s.name),name:s.name,alias:s.alias,address:s.address,contact:s.contact,position:s.position,
@@ -182,13 +182,13 @@ function extractAuditFields(v){
     });
   });
 }
-function freshState(){ return {version:1, tester:'', updatedAt:Date.now(), venues:SEED.map(venueFromSeed),
-  benchmark:{benchId:'',rationale:'',comparisons:{}}}; }
+function freshState(){ return {version:1, tester:'', updatedAt:Date.now(), venues:SEED.map(venueFromSeed), _benchMigrated:1}; }
 // Ensure a pitch has every test key with a correctly-sized values array.
 // Run on load AND on every venue arriving via team/device sync, so report
 // generation (which iterates ALL tests) never hits a missing key.
 function migratePitchTests(p){
   if(!p) return p; if(!p.tests) p.tests={};
+  if(!p.bench||typeof p.bench!=='object') p.bench={role:'',note:''};   // per-pitch benchmark role (benchmark / worse / sim / better)
   TESTS.forEach(t=>{ let td=p.tests[t.key];
     if(!td){ td=p.tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; }   // add tests introduced in a newer version (e.g. moisture76)
     if(!Array.isArray(td.values)) td.values=Array(t.n).fill(null);
@@ -196,11 +196,28 @@ function migratePitchTests(p){
     if(!td.photos) td.photos={}; });
   return p;
 }
+// One-time: fold the old global state.benchmark (single benchmark tab across all
+// venues) into per-pitch p.bench.role/.note. Runs once, guarded by a flag, so it
+// never clobbers values the user later edits in the venue tab.
+function migrateBenchmark(st){
+  if(!st||st._benchMigrated) return;
+  const b=st.benchmark;
+  if(b&&(b.benchId||(b.comparisons&&Object.keys(b.comparisons).length))){
+    const byId={}; (st.venues||[]).forEach(v=>(v.pitches||[]).forEach(p=>{byId[p.id]=p;}));
+    if(b.benchId&&byId[b.benchId]){ const p=byId[b.benchId]; p.bench=p.bench||{role:'',note:''};
+      if(!p.bench.role){ p.bench.role='bench'; if(!p.bench.note&&b.rationale) p.bench.note=b.rationale; } }
+    Object.keys(b.comparisons||{}).forEach(id=>{ const p=byId[id]; if(!p) return; const c=b.comparisons[id]||{};
+      p.bench=p.bench||{role:'',note:''};
+      if(!p.bench.role&&c.rel){ p.bench.role=c.rel; if(!p.bench.note&&c.note) p.bench.note=c.note; } });
+  }
+  st._benchMigrated=1; delete st.benchmark;
+}
 function load(){
   try{const raw=localStorage.getItem(LSKEY); if(raw){state=JSON.parse(raw); if(!state.updatedAt)state.updatedAt=Date.now();
     try{ (state.venues||[]).forEach(v=>{ extractAuditFields(v);
       if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name];
       (v.pitches||[]).forEach(migratePitchTests); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
+    try{ migrateBenchmark(state); }catch(e){}                     // fold old global benchmark tab into per-pitch fields
     try{ dedupeVenues(); }catch(e){}                              // collapse any same-name duplicate venues
     return;}}catch(e){}
   state=freshState(); save();
@@ -312,7 +329,7 @@ function shortNum(v){ return String(Math.abs(v)>=10?Math.round(v):Math.round(v*1
 function dotFontSVG(lbl){ const L=String(lbl).length; return L<=2?9:(L===3?7.4:6.2); }
 
 /* ----------------------------- router ----------------------------- */
-const TOP=['home','benchmark','settings'];
+const TOP=['home','settings'];
 let stack=['home'];
 function go(route,push){ if(push)stack.push(route); else if(TOP.includes(route))stack=[route]; else if(stack[stack.length-1]!==route)stack.push(route); render(); }
 function back(){ if(stack.length>1){stack.pop(); render();} }
@@ -333,7 +350,6 @@ function render(){
   else if(r==='photos'){ title='Photos'; sub=pitch()?pitch().name:''; app.innerHTML=scrPhotos(); }
   else if(r==='venueform'){ const v=venue(); title='Venue details'; sub=v?v.name:''; app.innerHTML=scrVenueForm(); }
   else if(r==='brief'){ const v=venue(); title='Pitch brief'; sub=v?v.name:''; app.innerHTML=scrBrief(); }
-  else if(r==='benchmark'){ title='Benchmark & comparison'; sub='Charlotte cluster'; app.innerHTML=scrBenchmark(); }
   else if(r==='settings'){ title='Data & settings'; app.innerHTML=scrSettings(); }
 
   $('barTitle').childNodes[0].nodeValue = onHome?'Labosport Pitch Inspector':title;
@@ -387,6 +403,26 @@ function scrVenue(){
   const ov=p.overall.level;
   const ovChip=ov?`<span class="chip ${['','low','mod','high','crit'][ov]}">${RLABEL[ov]} · ${ov}/4</span>`:'<span class="chip ghost">Not rated</span>';
 
+  // Benchmark comparison — only shown for venues with more than one pitch.
+  let benchBlock='';
+  if(v.pitches.length>1){
+    const bp=v.pitches.find(x=>x.bench&&x.bench.role==='bench');
+    const role=(p.bench&&p.bench.role)||'';
+    const opts=[['bench','★ Benchmark'],['worse','↓ Worse'],['sim','≈ Similar'],['better','↑ Better']];
+    const seg=`<div class="seg bench" data-bench>${opts.map(o=>`<button data-v="${o[0]}" class="${role===o[0]?'on':''}">${o[1]}</button>`).join('')}</div>`;
+    const isBench=role==='bench';
+    const noteLbl=isBench?'Why this benchmark? (selection rationale)':'Notes / significant differences vs benchmark';
+    const notePh=isBench?'e.g. Selected as the worst-case candidate because…':'e.g. Slightly firmer surface; more wear in the goalmouths…';
+    const note=`<div class="field"><label id="benchNoteLbl">${noteLbl}</label><textarea id="benchNote" placeholder="${esc(notePh)}">${esc((p.bench&&p.bench.note)||'')}</textarea></div>`;
+    let hint;
+    if(isBench) hint='This pitch is the benchmark for the venue — rate the other pitches relative to it.';
+    else if(bp) hint='Benchmark for this venue: <b>'+esc(bp.name)+'</b>. Rate this pitch against it.';
+    else hint='No benchmark chosen yet — tap ★ Benchmark on the pitch you inspected in detail.';
+    benchBlock=`<h2 class="sec">Benchmark comparison</h2>
+    <div class="card"><div class="field"><label>This pitch vs. the venue benchmark</label>${seg}</div>${note}
+      <div class="hint" style="padding-bottom:0">${hint}</div></div>`;
+  }
+
   const auditRows=AUDIT.map(s=>{
     const fields=p.audit[s[0]].fields;
     const complete=s[4].every(([label])=>{ const x=fields[label]; return x!=null && String(x).trim()!==''; });   // every question answered
@@ -406,6 +442,7 @@ function scrVenue(){
   return `${wr}${chips}${head}
     <h2 class="sec">1 · Overall assessment</h2>
     <div class="card"><div class="row" data-go="overall"><div class="ic">★</div><div class="meta"><div class="t">Overall risk rating</div><div class="d">Summary & headline comment</div></div>${ovChip}</div></div>
+    ${benchBlock}
     <h2 class="sec">2 · Venue audit</h2>
     ${v.briefLoaded?'<div class="hint" style="color:var(--green-d)">✓ Brief loaded — each section shows the questionnaire text; complete/confirm on site.</div>':''}
     <div class="card">${auditRows}</div>
@@ -527,22 +564,6 @@ function scrPhotos(){
     <button class="btn ghost" data-back="1">Done</button>`;
 }
 
-function scrBenchmark(){
-  const pitches=[]; state.venues.forEach(v=>v.pitches.forEach(p=>pitches.push({id:p.id,label:v.name+' — '+p.name})));
-  const b=state.benchmark;
-  if(!b.benchId&&pitches.length) b.benchId=pitches[0].id;
-  const opts=pitches.map(p=>`<option value="${p.id}" ${b.benchId===p.id?'selected':''}>${esc(p.label)}</option>`).join('');
-  const others=pitches.filter(p=>p.id!==b.benchId);
-  const comp=others.map(p=>{const c=b.comparisons[p.id]||{rel:'sim',note:''};
-    return `<div class="card"><div class="field"><label>${esc(p.label)}</label>
-      <div class="seg" data-cmp="${p.id}">${[['worse','↓ worse'],['sim','≈ similar'],['better','↑ better']].map(o=>`<button data-v="${o[0]}" class="${c.rel===o[0]?'on':''}">${o[1]}</button>`).join('')}</div></div>
-      <div class="field"><label>Notes / significant differences</label><textarea data-cmpnote="${p.id}">${esc(c.note)}</textarea></div></div>`;}).join('');
-  return `<div class="note"><b>Benchmark workflow.</b> Inspect one pitch in detail as the benchmark (best or worst candidate), then assess the others comparatively. Record the rationale and any significant differences. <span class="saved" id="savedFlag">saved ✓</span></div>
-    <div class="card"><div class="field"><label>Benchmark pitch</label><select id="benchSel">${opts}</select></div>
-      <div class="field"><label>Why this benchmark? (selection rationale)</label><textarea id="benchRat" placeholder="e.g. Selected as the worst-case candidate because…">${esc(b.rationale)}</textarea></div></div>
-    <h2 class="sec">Comparative observations</h2>${comp||'<div class="hint">Add more pitches to compare.</div>'}`;
-}
-
 function syncStatusText(){
   if(!window.GDrive) return 'Sync module not loaded';
   if(!GDrive.getClientId()) return 'Not set up — add your Client ID below';
@@ -650,7 +671,8 @@ function defaultPositions(n){
   let pts;
   if(n<=3) pts=[[.5,.28],[.5,.5],[.5,.72]];
   else if(n===6) pts=[[.28,.3],[.28,.7],[.5,.3],[.5,.7],[.72,.3],[.72,.7]];
-  else if(n===25){ pts=[]; const g=[.1,.3,.5,.7,.9]; for(const y of g) for(const x of g) pts.push([x,y]); }
+  else if(n===25){ pts=[]; const g=[.1,.3,.5,.7,.9];   // snake / boustrophedon numbering
+    g.forEach((y,r)=>{ const xs=(r%2)?g.slice().reverse():g; xs.forEach(x=>pts.push([x,y])); }); }   // row1 L→R (1-5), row2 R→L (6 on right…10 on left)… ending P25 bottom-right
   else pts=[[.16,.3],[.16,.7],[.38,.3],[.38,.7],[.5,.3],[.5,.7],[.62,.3],[.62,.7],[.84,.3],[.84,.7],[.5,.12],[.5,.88]];
   return pts.slice(0,n).map(p=>p.slice());
 }
@@ -780,11 +802,15 @@ function bind(){
   if($('pubDrive'))$('pubDrive').onclick=()=>publishVenueDrive(venue());
   if($('delPitch'))$('delPitch').onclick=deletePitchOrVenue;
 
-  // benchmark
-  if($('benchSel'))$('benchSel').onchange=()=>{state.benchmark.benchId=$('benchSel').value;save();render();};
-  if($('benchRat'))$('benchRat').oninput=()=>{state.benchmark.rationale=$('benchRat').value;save(true);};
-  app.querySelectorAll('[data-cmp]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{const id=seg.dataset.cmp;state.benchmark.comparisons[id]=state.benchmark.comparisons[id]||{rel:'sim',note:''};state.benchmark.comparisons[id].rel=b.dataset.v;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);}));
-  app.querySelectorAll('[data-cmpnote]').forEach(t=>t.oninput=()=>{const id=t.dataset.cmpnote;state.benchmark.comparisons[id]=state.benchmark.comparisons[id]||{rel:'sim',note:''};state.benchmark.comparisons[id].note=t.value;save(true);});
+  // benchmark (per-pitch, in the venue tab — only one benchmark per venue)
+  if($('benchNote'))$('benchNote').oninput=()=>{ const p=pitch(); p.bench=p.bench||{role:'',note:''}; p.bench.note=$('benchNote').value; save(true); };
+  const benchSeg=app.querySelector('[data-bench]');
+  if(benchSeg)benchSeg.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    const p=pitch(); p.bench=p.bench||{role:'',note:''}; const v=b.dataset.v;
+    if(p.bench.role===v){ p.bench.role=''; }                 // tap the active option again to clear it
+    else { p.bench.role=v; if(v==='bench') venue().pitches.forEach(x=>{ if(x!==p&&x.bench&&x.bench.role==='bench') x.bench.role=''; }); }
+    save(); render();   // note label + hint depend on role; re-render also reflects the single-benchmark rule
+  });
 
   // settings
   if($('testerName'))$('testerName').oninput=()=>{state.tester=$('testerName').value;save(true);};
@@ -1187,9 +1213,10 @@ function reportSheet(v,p){
     return rrow([E(t.name),st.avg!=null?E(fmt(st.avg,t.unit)):'—',st.varPct!=null?st.varPct:'—',E(p.tests[k].comment||'')]);}).join('');
   const appendix=AUDIT.map(s=>{const f=p.audit[s[0]].fields;const rows=s[4].map(([label])=>{const val=f[label];return rrow([E(label),val?E(val):'—']);}).join('');
     return `<h3>Appendix ${s[0]} — ${E(s[1])}</h3><table class="t2">${rows}</table>`;}).join('');
-  const b=state.benchmark; let bench='';
-  if(b.benchId===p.id&&b.rationale) bench=`<h3>Benchmark selection</h3><p>${E(b.rationale)}</p>`;
-  const cmp=b.comparisons[p.id]; if(cmp&&(cmp.note||cmp.rel)) bench+=`<h3>Comparison vs benchmark</h3><p><b>${({worse:'Worse than',sim:'Similar to',better:'Better than'}[cmp.rel]||'')} benchmark.</b> ${E(cmp.note||'')}</p>`;
+  let bench=''; const pb=p.bench||{};
+  if(pb.role==='bench'){ bench=`<h3>Benchmark selection</h3><p>${pb.note?E(pb.note):'Selected as the benchmark pitch for this venue.'}</p>`; }
+  else if(pb.role){ const bp=(v.pitches||[]).find(x=>x.bench&&x.bench.role==='bench');
+    bench=`<h3>Comparison vs benchmark</h3><p><b>${({worse:'Worse than',sim:'Similar to',better:'Better than'}[pb.role]||'')} benchmark${bp?(' ('+E(bp.name)+')'):''}.</b> ${E(pb.note||'')}</p>`; }
   return `<div class="sheet">
     <div class="hd"><div class="ttl">PITCH INSPECTION <span class="lb">REPORT</span></div><div class="muted">Labosport Group · ${E(today())}</div></div>
     <div class="grid">
@@ -1311,7 +1338,9 @@ function init(){
   if(window.GDrive){
     GDrive.configure({
       getState:()=>state,
-      applyState:(obj)=>{ if(!obj||!obj.venues)return; state=obj; if(!state.benchmark)state.benchmark={benchId:'',rationale:'',comparisons:{}}; if(!state.updatedAt)state.updatedAt=Date.now();
+      applyState:(obj)=>{ if(!obj||!obj.venues)return; state=obj;
+        try{ (state.venues||[]).forEach(v=>(v.pitches||[]).forEach(migratePitchTests)); migrateBenchmark(state); }catch(e){}
+        if(!state.updatedAt)state.updatedAt=Date.now();
         CUR=null; CURP=0; stack=['home']; save(false,{keepStamp:true,noSync:true}); render(); },
       onStatus:(m,kind)=>{ if(kind!=='muted') toast(m); const e=$('syncStatus'); if(e&&cur()==='settings') e.innerHTML=m; }
     });
