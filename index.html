@@ -35,9 +35,9 @@
 </div>
 
 <input type="file" id="pdfInput" accept="application/pdf" style="display:none">
-<input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
-<input type="file" id="photoLibInput" accept="image/*" multiple style="display:none">
-<input type="file" id="obsPhotoInput" accept="image/*" multiple style="display:none">
+<input type="file" id="photoInput" accept="image/*,.heic,.heif,.HEIC,.HEIF,image/heic,image/heif" capture="environment" style="display:none">
+<input type="file" id="photoLibInput" accept="image/*,.heic,.heif,.HEIC,.HEIF,image/heic,image/heif" multiple style="display:none">
+<input type="file" id="obsPhotoInput" accept="image/*,.heic,.heif,.HEIC,.HEIF,image/heic,image/heif" multiple style="display:none">
 <input type="file" id="importInput" accept="application/json,.json" style="display:none">
 <div class="toast" id="toast"></div>
 
@@ -47,6 +47,8 @@
 <script src="libs/pizzip.min.js"></script>
 <script src="libs/docxtemplater.min.js"></script>
 <script src="libs/imagemodule.js"></script>
+<!-- HEIC/HEIF decoder so iPhone photos can be added on desktop browsers too -->
+<script src="libs/heic2any.min.js"></script>
 <script src="js/mergeDocx.js"></script>
 <!-- Google sign-in for Drive sync (must load live; not cached) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>

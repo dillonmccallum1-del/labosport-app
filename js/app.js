@@ -861,16 +861,28 @@ async function handleBrief(file){
 /* photo capture with downscale — pushes a {id,dataUrl,w,h} into the given target array (default = pitch photos).
    Decodes via createImageBitmap first (handles iPhone HEIC/HEIF library photos and applies EXIF orientation),
    then falls back to FileReader+Image for older browsers. Returns true only if a photo was actually stored. */
+function isHeic(file){ return /hei[cf]/i.test(file&&file.type||'') || /\.(heic|heif)$/i.test(file&&file.name||''); }
+function blobToImage(blob){
+  return new Promise((res,rej)=>{ const r=new FileReader();
+    r.onload=()=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>rej(new Error('decode')); im.src=r.result; };
+    r.onerror=()=>rej(new Error('read')); r.readAsDataURL(blob); });
+}
 async function decodeToBitmap(file){
   // Preferred: createImageBitmap can decode HEIC/HEIF on modern iOS Safari and is faster.
   try{ const bmp=await createImageBitmap(file,{imageOrientation:'from-image'}); if(bmp&&bmp.width) return bmp; }catch(e){}
   try{ const bmp=await createImageBitmap(file); if(bmp&&bmp.width) return bmp; }catch(e){}
+  // HEIC/HEIF fallback for desktop browsers (Chrome/Firefox/Edge) that can't decode it
+  // natively — convert to JPEG with heic2any, then decode the result.
+  if(window.heic2any && isHeic(file)){
+    try{
+      const out=await window.heic2any({blob:file, toType:'image/jpeg', quality:0.85});
+      const blob=Array.isArray(out)?out[0]:out;
+      try{ const bmp=await createImageBitmap(blob); if(bmp&&bmp.width) return bmp; }catch(e){}
+      try{ const im=await blobToImage(blob); if(im&&im.width) return im; }catch(e){}
+    }catch(e){ console.warn('heic2any decode failed',e); }
+  }
   // Fallback: FileReader → Image (JPEG/PNG everywhere; cannot decode HEIC).
-  try{
-    return await new Promise((res,rej)=>{ const r=new FileReader();
-      r.onload=()=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>rej(new Error('decode')); im.src=r.result; };
-      r.onerror=()=>rej(new Error('read')); r.readAsDataURL(file); });
-  }catch(e){ return null; }
+  try{ return await blobToImage(file); }catch(e){ return null; }
 }
 async function addPhotoFile(file, target){
   const src=await decodeToBitmap(file);
@@ -1077,10 +1089,31 @@ async function buildPitchReportData(v,p){
   }catch(e){ data.has_soil_photos=false; }
   return {data,sizeMap};
 }
+/* Sniff an image's real format from its leading bytes so we can name the embedded
+   file with a matching extension. The bundled image module names EVERY image
+   "image_generated_N.png"; when the bytes are actually JPEG, strict readers
+   (MS Word, Google Docs) refuse to render them — the cause of blank photos. */
+function imgExtFromBytes(u8){
+  if(u8&&u8.length>3){
+    if(u8[0]===0x89&&u8[1]===0x50&&u8[2]===0x4E&&u8[3]===0x47) return 'png';
+    if(u8[0]===0xFF&&u8[1]===0xD8&&u8[2]===0xFF) return 'jpg';
+    if(u8[0]===0x47&&u8[1]===0x49&&u8[2]===0x46) return 'gif';
+    if(u8[0]===0x52&&u8[1]===0x49&&u8[2]===0x46&&u8[3]===0x46) return 'webp';
+  }
+  return 'png';
+}
 function renderReportZip(buf,data,sizeMap,withImages){
   const modules=[];
-  if(withImages && window.ImageModule){ modules.push(new window.ImageModule({centered:true,
-    getImage:tag=>new Uint8Array(b64ToArrayBuffer(tag)), getSize:(img,tag)=>sizeMap[tag]||[235,150]})); }
+  if(withImages && window.ImageModule){
+    let nextExt='png';
+    const mod=new window.ImageModule({centered:true,
+      getImage:tag=>{ const u=new Uint8Array(b64ToArrayBuffer(tag)); nextExt=imgExtFromBytes(u); return u; },
+      getSize:(img,tag)=>sizeMap[tag]||[235,150]});
+    // getImage() always runs immediately before getNextImageName() for the same image,
+    // so nextExt is the format of the image about to be written — use it for the filename.
+    mod.getNextImageName=function(){ const n='image_generated_'+this.imageNumber+'.'+nextExt; this.imageNumber++; return n; };
+    modules.push(mod);
+  }
   const doc=new window.docxtemplater(new window.PizZip(buf),{modules,paragraphLoop:true,linebreaks:true,delimiters:{start:'{',end:'}'},nullGetter:()=>''});
   doc.render(data);
   return doc.getZip();
