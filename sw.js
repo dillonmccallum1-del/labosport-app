@@ -1,21 +1,21 @@
 // Service worker — offline caching for the Labosport Pitch Inspector.
-const CACHE = 'labosport-v28';
+const CACHE = 'labosport-v29';
 const SHELL = [
   './',
   './index.html',
-  './styles.css',
-  './app.js',
-  './briefParser.js',
-  './seedImages.js',
-  './gdrive.js',
-  './firebase-config.js',
-  './firebase.js',
+  './css/styles.css',
+  './js/app.js',
+  './js/briefParser.js',
+  './js/seedImages.js',
+  './js/gdrive.js',
+  './js/firebase-config.js',
+  './js/firebase.js',
   './manifest.webmanifest',
   './report_template.docx',
   './libs/pizzip.min.js',
   './libs/docxtemplater.min.js',
   './libs/imagemodule.js',
-  './mergeDocx.js',
+  './js/mergeDocx.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png'
