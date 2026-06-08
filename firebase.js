@@ -22,7 +22,8 @@
   function fbReady(){ return typeof firebase!=='undefined' && firebase.firestore && firebase.auth; }
 
   // venue doc to store in Firestore: drop photos (size) + brief images + transient _ts
-  function forFirestore(v){ const c=JSON.parse(JSON.stringify(v)); delete c.briefImages; (c.pitches||[]).forEach(p=>{p.photos=[];}); return c; }
+  function forFirestore(v){ const c=JSON.parse(JSON.stringify(v)); delete c.briefImages;
+    (c.pitches||[]).forEach(p=>{ p.photos=[]; if(p.tests) Object.keys(p.tests).forEach(k=>{ if(p.tests[k]) p.tests[k].photos={}; }); }); return c; }
   function contentHash(v){ const c=forFirestore(v); delete c._ts; delete c._by; return JSON.stringify(c); }
 
   function init(){

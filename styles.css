@@ -1,3 +1,9 @@
+.obsrow{padding:8px 2px;border-bottom:1px solid var(--line)}.obsrow:last-child{border-bottom:none}
+.obsrow .obshd{font-size:13px;margin-bottom:6px}
+.obsgrid{display:flex;flex-wrap:wrap;gap:8px}
+.obsphoto{position:relative;width:84px;height:84px;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.obsphoto img{width:100%;height:100%;object-fit:cover;display:block}
+.obsphoto .del{position:absolute;top:3px;right:3px;background:rgba(0,0,0,.55);color:#fff;border:none;width:20px;height:20px;border-radius:6px;font-size:11px;cursor:pointer;line-height:1}
 :root{
   --brand:#E92840; --brand-d:#c81f34; --brand-l:#fdeaed; --bar:#28282A; --gray:#838384;
   --green:#1f7a4d; --green-d:#155c39; --green-l:#e7f3ec;

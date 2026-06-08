@@ -9,12 +9,13 @@ const TESTS = [
   {key:'weed',       name:'Weed content',                 n:3,  unit:'%',    pri:false},
   {key:'turf_height',name:'Turf height',                  n:3,  unit:'mm',   pri:false},
   {key:'infil',      name:'Infiltration rate',            n:3,  unit:'mm/h', pri:false},
-  {key:'soil',       name:'Soil properties',              n:3,  unit:'',     pri:false, note:'Record sample observations / send for lab analysis'},
-  {key:'shear',      name:'Root zone shear strength',     n:6,  unit:'Nm',   pri:false},
-  {key:'ndvi',       name:'Turf health (NDVI)',           n:12, unit:'',     pri:false},
-  {key:'clegg',      name:'Clegg impact (compaction)',    n:12, unit:'g',    pri:true},
-  {key:'traction',   name:'Surface traction / 19 mm stud',n:12, unit:'Nm',   pri:true},
-  {key:'moisture',   name:'Soil moisture content',        n:12, unit:'%',    pri:true},
+  {key:'soil',       name:'Soil properties (thatch depth)',n:3,  unit:'mm',   pri:false, note:'Measure thatch depth (mm) at each position. Add a photo per observation below.', obsPhotos:true},
+  {key:'shear',      name:'Root zone shear strength',     n:12, unit:'Nm',   pri:false},
+  {key:'ndvi',       name:'Turf health (NDVI)',           n:25, unit:'',     pri:false},
+  {key:'clegg',      name:'Clegg impact (compaction)',    n:25, unit:'g',    pri:true},
+  {key:'traction',   name:'Surface traction / 19 mm stud',n:25, unit:'Nm',   pri:true},
+  {key:'moisture',   name:'Soil moisture — 38 mm (1.5 in)',n:25, unit:'%',   pri:true},
+  {key:'moisture76', name:'Soil moisture — 76 mm (3 in)', n:25, unit:'%',    pri:true},
 ];
 const TKEY = Object.fromEntries(TESTS.map(t=>[t.key,t]));
 
@@ -95,7 +96,7 @@ let state=null, CUR=null, CURP=0;
 
 function uid(){return 'id'+Math.random().toString(36).slice(2,9);}
 function newPitch(name){
-  const tests={}; TESTS.forEach(t=>tests[t.key]={values:Array(t.n).fill(null),comment:'',method:''});
+  const tests={}; TESTS.forEach(t=>tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}});
   const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
   const risk={}; RISK.forEach(r=>risk[r[0]]=0);
   return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},photos:[],photoNotes:''};
@@ -183,7 +184,11 @@ function freshState(){ return {version:1, tester:'', updatedAt:Date.now(), venue
 function load(){
   try{const raw=localStorage.getItem(LSKEY); if(raw){state=JSON.parse(raw); if(!state.updatedAt)state.updatedAt=Date.now();
     try{ (state.venues||[]).forEach(v=>{ extractAuditFields(v);
-      if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name]; }); }catch(e){}   // backfill brief fields + images
+      if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name];
+      (v.pitches||[]).forEach(p=>{ TESTS.forEach(t=>{ const td=p.tests&&p.tests[t.key]; if(!td)return;   // resize values if a test's position count changed
+        if(!Array.isArray(td.values)) td.values=Array(t.n).fill(null);
+        if(td.values.length!==t.n){ const nv=Array(t.n).fill(null); for(let i=0;i<Math.min(td.values.length,t.n);i++)nv[i]=td.values[i]; td.values=nv; td.positions=null; }
+        if(!td.photos) td.photos={}; }); }); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
     return;}}catch(e){}
   state=freshState(); save();
 }
@@ -205,7 +210,9 @@ function applyRemoteVenue(remote){
   if(local && (local._ts||0) >= (remote._ts||0)) return;       // ours is newer/equal
   // preserve local photos & brief images (not carried in the team DB)
   remote.briefImages = (local&&local.briefImages)?local.briefImages:(remote.briefImages||[]);
-  (remote.pitches||[]).forEach(rp=>{ const lp=local&&(local.pitches||[]).find(x=>x.id===rp.id); rp.photos=(lp&&lp.photos)?lp.photos:(rp.photos||[]); });
+  (remote.pitches||[]).forEach(rp=>{ const lp=local&&(local.pitches||[]).find(x=>x.id===rp.id); rp.photos=(lp&&lp.photos)?lp.photos:(rp.photos||[]);
+    // preserve local per-observation test photos too (not carried in the team DB)
+    if(rp.tests) Object.keys(rp.tests).forEach(k=>{ const lph=lp&&lp.tests&&lp.tests[k]&&lp.tests[k].photos; rp.tests[k].photos=lph||rp.tests[k].photos||{}; }); });
   if(i>=0) state.venues[i]=remote; else state.venues.push(remote);
   if(window.FB) FB.markSeen(remote);
   save(false,{keepStamp:true,noSync:true,noFB:true});
@@ -316,10 +323,11 @@ function scrVenue(){
   const ovChip=ov?`<span class="chip ${['','low','mod','high','crit'][ov]}">${RLABEL[ov]} · ${ov}/4</span>`:'<span class="chip ghost">Not rated</span>';
 
   const auditRows=AUDIT.map(s=>{
-    const filled=Object.values(p.audit[s[0]].fields).some(x=>x&&String(x).trim());
+    const fields=p.audit[s[0]].fields;
+    const complete=s[4].every(([label])=>{ const x=fields[label]; return x!=null && String(x).trim()!==''; });   // every question answered
     return `<div class="row" data-go="audit:${s[0]}"><div class="ic">${'ABCDEFGH'.includes(s[0])?s[0]:'•'}</div>
       <div class="meta"><div class="t">${s[0]}. ${esc(s[1])}</div><div class="d">${esc(s[2])}</div></div>
-      ${filled?'<span class="tick">✓</span>':(p.audit[s[0]].brief?'<span class="pill">brief</span>':'<span class="chev">›</span>')}</div>`;
+      ${complete?'<span class="tick">✓</span>':(p.audit[s[0]].brief?'<span class="pill">brief</span>':'<span class="chev">›</span>')}</div>`;
   }).join('');
 
   const testRows=TESTS.map(t=>{
@@ -383,6 +391,16 @@ function scrTest(key){
     <div class="pu">${esc(t.unit)||'&nbsp;'}</div></div>`).join('');
   const noteLine=t.note?`<div class="hint">${esc(t.note)}</div>`:'';
   const idx=TESTS.findIndex(x=>x.key===key), nx=TESTS[idx+1];
+  let obsBox='';
+  if(t.obsPhotos){
+    const ph=td.photos||{};
+    const rows=td.values.map((v,i)=>{
+      const list=(ph[i]||[]).map(x=>`<div class="obsphoto"><img src="${x.dataUrl}" alt=""><button class="del" data-delobs="${key}|${i}|${x.id}">✕</button></div>`).join('');
+      return `<div class="obsrow"><div class="obshd"><b>P${i+1}</b>${v!=null?` · ${esc(shortNum(v))} mm`:' · no reading yet'}<button class="btn sm ghost" data-obsadd="${i}" style="float:right">＋ Photo</button></div>
+        <div class="obsgrid">${list||'<span class="hint" style="padding:0">No photos yet</span>'}</div></div>`;
+    }).join('');
+    obsBox=`<h2 class="sec">Observation photos</h2><div class="card" style="padding:8px 12px">${rows}</div>`;
+  }
   return `<div class="hint">${esc(t.name)} · ${t.n} position${t.n>1?'s':''}${t.pri?' · <b style="color:var(--crit)">priority</b>':''} <span class="saved" id="savedFlag">saved ✓</span></div>
     ${pitchSVG(key)}
     <div class="leg"><span><i class="dot" style="background:var(--green)"></i> recorded</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
@@ -399,6 +417,7 @@ function scrTest(key){
         <input id="testMethod" inputmode="text" placeholder="e.g. Clegg hammer 2.25 kg, 1 drop per position" value="${esc(td.method||'')}"></div>
       <div class="field"><label>Comments / observations</label>
         <textarea id="testComment" placeholder="e.g. lower readings in the droughted southern in-goal area…">${esc(td.comment)}</textarea></div></div>
+    ${obsBox}
     ${nx?`<button class="btn primary" id="nextTest">Next test: ${esc(nx.name)} →</button>`:''}
     <button class="btn ghost" data-back="1">Done</button>`;
 }
@@ -566,6 +585,7 @@ function defaultPositions(n){
   let pts;
   if(n<=3) pts=[[.5,.28],[.5,.5],[.5,.72]];
   else if(n===6) pts=[[.28,.3],[.28,.7],[.5,.3],[.5,.7],[.72,.3],[.72,.7]];
+  else if(n===25){ pts=[]; const g=[.1,.3,.5,.7,.9]; for(const y of g) for(const x of g) pts.push([x,y]); }
   else pts=[[.16,.3],[.16,.7],[.38,.3],[.38,.7],[.5,.3],[.5,.7],[.62,.3],[.62,.7],[.84,.3],[.84,.7],[.5,.12],[.5,.88]];
   return pts.slice(0,n).map(p=>p.slice());
 }
@@ -582,11 +602,29 @@ function pitchSVG(key){
   const dots=pos.map((pp,k)=>{const x=PPAD+pp[0]*(PW-2*PPAD),y=PPAD+pp[1]*(PH-2*PPAD);const done=vals[k]!=null;
     const lbl=done?shortNum(vals[k]):String(k+1);
     return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${done?'#1f7a4d':'#fff'}" stroke="${done?'#155c39':'#c2cad2'}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="${dotFontSVG(lbl)}" font-weight="700" text-anchor="middle" fill="${done?'#fff':'#6b7785'}">${esc(lbl)}</text></g>`;}).join('');
-  return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#e7f3ec;border-radius:12px;border:1px solid #d4e6db">
-    <rect x="${PPAD}" y="${PPAD}" width="${PW-2*PPAD}" height="${PH-2*PPAD}" fill="#cfe8d6" stroke="#9cc9ad" stroke-width="2"/>
-    <line x1="${PW/2}" y1="${PPAD}" x2="${PW/2}" y2="${PH-PPAD}" stroke="#9cc9ad" stroke-width="1.5"/>
-    <line x1="${PPAD+(PW-2*PPAD)*.22}" y1="${PPAD}" x2="${PPAD+(PW-2*PPAD)*.22}" y2="${PH-PPAD}" stroke="#9cc9ad" stroke-dasharray="3 3"/>
-    <line x1="${PPAD+(PW-2*PPAD)*.78}" y1="${PPAD}" x2="${PPAD+(PW-2*PPAD)*.78}" y2="${PH-PPAD}" stroke="#9cc9ad" stroke-dasharray="3 3"/>${dots}</svg></div>
+  const ix=PPAD, iy=PPAD, iw=PW-2*PPAD, ih=PH-2*PPAD;
+  const X=f=>(ix+f*iw).toFixed(1), Y=f=>(iy+f*ih).toFixed(1);
+  const W='#ffffff', vT=Y(0), vB=Y(1);
+  // in-goal end zones (outside the try lines)
+  const inGoal=`<rect x="2" y="${iy}" width="${PPAD-2}" height="${ih}" fill="#2f8f4e"/>
+    <rect x="${PW-PPAD}" y="${iy}" width="${PPAD-2}" height="${ih}" fill="#2f8f4e"/>
+    <line x1="2" y1="${iy}" x2="2" y2="${iy+ih}" stroke="${W}" stroke-width="1.2"/>
+    <line x1="${PW-2}" y1="${iy}" x2="${PW-2}" y2="${iy+ih}" stroke="${W}" stroke-width="1.2"/>`;
+  // goal posts on each try line (top-down H)
+  const posts=[X(0),X(1)].map(gx=>`<line x1="${gx}" y1="${Y(.40)}" x2="${gx}" y2="${Y(.60)}" stroke="${W}" stroke-width="2"/>
+    <line x1="${gx}" y1="${Y(.40)}" x2="${(+gx)+(gx==X(0)?-5:5)}" y2="${Y(.40)}" stroke="${W}" stroke-width="2"/>
+    <line x1="${gx}" y1="${Y(.60)}" x2="${(+gx)+(gx==X(0)?-5:5)}" y2="${Y(.60)}" stroke="${W}" stroke-width="2"/>`).join('');
+  // vertical field lines: try lines + 22m (solid), 10m (dashed), halfway (solid)
+  const vline=(f,dash)=>`<line x1="${X(f)}" y1="${vT}" x2="${X(f)}" y2="${vB}" stroke="${W}" stroke-width="${dash?1.2:1.6}" ${dash?'stroke-dasharray="4 4"':''}/>`;
+  const verticals=[vline(0),vline(.22),vline(.40,1),vline(.5),vline(.60,1),vline(.78),vline(1)].join('');
+  // dashed 5 m and 15 m lines running the length of the pitch
+  const hline=f=>`<line x1="${X(.02)}" y1="${Y(f)}" x2="${X(.98)}" y2="${Y(f)}" stroke="${W}" stroke-width="1" stroke-dasharray="5 6" opacity=".85"/>`;
+  const horizontals=[hline(.07),hline(.21),hline(.79),hline(.93)].join('');
+  return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#23823f;border-radius:12px;border:1px solid #1c6e34">
+    <rect x="${ix}" y="${iy}" width="${iw}" height="${ih}" fill="#36a058"/>
+    ${inGoal}
+    <rect x="${ix}" y="${iy}" width="${iw}" height="${ih}" fill="none" stroke="${W}" stroke-width="1.8"/>
+    ${verticals}${horizontals}${posts}${dots}</svg></div>
     <div class="draghint">Drag any numbered dot to the spot you actually tested</div>
     <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="randDots">🎲 Randomize</button> <button class="btn sm ghost" id="resetDots">↺ Reset to default</button></div>`;
 }
@@ -644,6 +682,9 @@ function bind(){
   if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const i=TESTS.findIndex(x=>x.key===key); const nx=TESTS[i+1]; if(nx)goReplace('test:'+nx.key); };
   if($('testMethod'))$('testMethod').oninput=()=>{pitch().tests[cur().split(':')[1]].method=$('testMethod').value;save(true);};
   if($('testComment'))$('testComment').oninput=()=>{pitch().tests[cur().split(':')[1]].comment=$('testComment').value;save(true);};
+  // observation photos (per position)
+  app.querySelectorAll('[data-obsadd]').forEach(b=>b.onclick=()=>{ obsTarget={key:cur().split(':')[1],pos:+b.dataset.obsadd}; $('obsPhotoInput').click(); });
+  app.querySelectorAll('[data-delobs]').forEach(b=>b.onclick=()=>{ const [k,pos,id]=b.dataset.delobs.split('|'); const td=pitch().tests[k]; if(td.photos&&td.photos[pos]){ td.photos[pos]=td.photos[pos].filter(x=>x.id!==id); if(!td.photos[pos].length) delete td.photos[pos]; } save(); render(); });
 
   // overall
   if($('ovSeg'))$('ovSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{pitch().overall.level=+b.dataset.l;$('ovSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);});
@@ -758,13 +799,13 @@ async function handleBrief(file){
   }catch(e){ console.error(e); toast('⚠ Failed to read PDF: '+e.message); }
 }
 
-/* photo capture with downscale */
-function addPhotoFile(file){ return new Promise(resolve=>{
+/* photo capture with downscale — pushes a {id,dataUrl,w,h} into the given target array (default = pitch photos) */
+function addPhotoFile(file, target){ return new Promise(resolve=>{
   const reader=new FileReader();
   reader.onload=()=>{ const img=new Image();
     img.onload=()=>{ const max=1000; let w=img.width,h=img.height; if(w>h&&w>max){h=h*max/w;w=max;} else if(h>max){w=w*max/h;h=max;}
       const c=document.createElement('canvas'); c.width=w;c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
-      pitch().photos.push({id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:Math.round(w),h:Math.round(h)}); resolve(true); };
+      (target||pitch().photos).push({id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:Math.round(w),h:Math.round(h)}); resolve(true); };
     img.onerror=()=>resolve(false); img.src=reader.result; };
   reader.onerror=()=>resolve(false); reader.readAsDataURL(file);
 }); }
@@ -773,6 +814,16 @@ async function handlePhotos(fileList){
   toast('<span class="spin"></span> Adding photo'+(files.length>1?'s':'')+'…');
   for(const f of files){ try{ await addPhotoFile(f); }catch(e){} }
   try{ save(); render(); toast('Added '+files.length+' photo'+(files.length>1?'s':'')+' ✓'); }
+  catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); }
+}
+let obsTarget=null;   // {key,pos} for the test-observation photo currently being added
+async function handleObsPhotos(fileList){
+  const files=Array.from(fileList||[]).filter(f=>f&&/^image\//.test(f.type||'')); if(!files.length||!obsTarget) return;
+  const {key,pos}=obsTarget; const td=pitch().tests[key]; if(!td.photos)td.photos={}; if(!td.photos[pos])td.photos[pos]=[];
+  toast('<span class="spin"></span> Adding photo'+(files.length>1?'s':'')+'…');
+  for(const f of files){ try{ await addPhotoFile(f, td.photos[pos]); }catch(e){} }
+  obsTarget=null;
+  try{ save(); render(); toast('Photo added to P'+(pos+1)+' ✓'); }
   catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); }
 }
 
@@ -795,6 +846,7 @@ function csvForVenue(onlyVenue){
     if(p.overall.level)rows.push([v.name,p.name,'Overall','Risk rating',p.overall.level+' ('+RLABEL[p.overall.level]+')','']);
     if(p.overall.comment)rows.push([v.name,p.name,'Overall','Comment',p.overall.comment,'']);
     if(p.photos&&p.photos.length)rows.push([v.name,p.name,'Photos','Count',p.photos.length,'']);
+    TESTS.forEach(t=>{ const ph=p.tests[t.key]&&p.tests[t.key].photos; if(ph) Object.keys(ph).forEach(pos=>{ const n=(ph[pos]||[]).length; if(n)rows.push([v.name,p.name,'Observation photos',t.name+' P'+(+pos+1),n,'']); }); });
     if(p.photoNotes)rows.push([v.name,p.name,'Photos','Notes',p.photoNotes,'']);
   }));
   return rows.map(r=>r.map(csvCell).join(',')).join('\n');
@@ -820,7 +872,7 @@ const REPORT_MAP = {
   G:{'Fertilizer applications/yr (type & rate)':'g_fert','Herbicide applications per year':'g_herb','Other turf management activities':'g_other'},
   H:{'Additional playability risks':'h_risks','General comments on surface / maintenance':'h_comments'},
 };
-const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','shear','ndvi','clegg','traction','moisture'];
+const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','shear','ndvi','clegg','traction','moisture','moisture76'];
 function today(){ return new Date().toISOString().slice(0,10); }
 function sanitize(s){ return (s||'').replace(/[^\w\-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40); }
 function reportName(v,p,ext){ return `Labosport_${sanitize(v.name)}_${sanitize(p.name)}_${today()}.${ext}`; }
@@ -876,7 +928,35 @@ function buildTestMapsImage(p){
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 
-function buildPitchReportData(v,p){
+function loadImage(src){ return new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>res(null); im.src=src; }); }
+/* composite of the soil-test observation photos, grouped by position (for report Appendix K) */
+async function buildSoilPhotosImage(p){
+  const td=p.tests&&p.tests.soil, ph=(td&&td.photos)||{};
+  const positions=[]; (td?td.values:[]).forEach((v,i)=>{ if((ph[i]||[]).length) positions.push({i,v,photos:ph[i]}); });
+  if(!positions.length) return null;
+  const W=1240, pad=24, cols=3, cellW=Math.floor((W-pad*(cols+1))/cols), cellH=Math.round(cellW*0.75), titleH=34, blockGap=20;
+  const blocks=positions.map(pos=>({pos, rows:Math.ceil(pos.photos.length/cols)})).map(b=>({...b, h:titleH + b.rows*(cellH+10) + blockGap}));
+  const H=pad + blocks.reduce((a,b)=>a+b.h,0);
+  const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+  let y=pad;
+  for(const b of blocks){ const pos=b.pos;
+    ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText('Position P'+(pos.i+1)+(pos.v!=null?'  ·  '+shortNum(pos.v)+' mm thatch':''), pad, y);
+    for(let k=0;k<pos.photos.length;k++){ const col=k%cols, row=Math.floor(k/cols);
+      const x=pad+col*(cellW+pad), cy=y+titleH+row*(cellH+10);
+      ctx.fillStyle='#eef1f4'; ctx.fillRect(x,cy,cellW,cellH);
+      const im=await loadImage(pos.photos[k].dataUrl);
+      if(im&&im.width){ const ar=im.width/im.height, car=cellW/cellH; let dw,dh,dx,dy;
+        if(ar>car){ dh=cellH; dw=dh*ar; dx=x-(dw-cellW)/2; dy=cy; } else { dw=cellW; dh=dw/ar; dx=x; dy=cy-(dh-cellH)/2; }
+        ctx.save(); ctx.beginPath(); ctx.rect(x,cy,cellW,cellH); ctx.clip(); ctx.drawImage(im,dx,dy,dw,dh); ctx.restore(); }
+      ctx.strokeStyle='#c9ccd0'; ctx.lineWidth=1; ctx.strokeRect(x,cy,cellW,cellH);
+    }
+    y+=b.h;
+  }
+  return {dataUrl:c.toDataURL('image/jpeg',0.7), w:W, h:H};
+}
+async function buildPitchReportData(v,p){
   const data=buildReportData(v,p), sizeMap={};
   for(let i=0;i<6;i++){ const ph=p.photos[i], key='photo'+(i+1);
     if(ph){ data[key]=ph.dataUrl; sizeMap[ph.dataUrl]=fitBox(ph.w||240,ph.h||160,250,185); }
@@ -884,6 +964,10 @@ function buildPitchReportData(v,p){
   data.photo_notes=p.photoNotes||'';
   try{ const tm=buildTestMapsImage(p); data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
   catch(e){ data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+  try{ const sp=await buildSoilPhotosImage(p);
+    if(sp){ data.has_soil_photos=true; data.soil_photos=sp.dataUrl; sizeMap[sp.dataUrl]=fitBox(sp.w,sp.h,660,900); }
+    else data.has_soil_photos=false;
+  }catch(e){ data.has_soil_photos=false; }
   return {data,sizeMap};
 }
 function renderReportZip(buf,data,sizeMap,withImages){
@@ -900,7 +984,7 @@ async function buildVenueWordBlob(v, pitchesArr){
   const pitches=pitchesArr&&pitchesArr.length?pitchesArr:v.pitches;
   const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')');
   const buf=await res.arrayBuffer();
-  const built=pitches.map(p=>buildPitchReportData(v,p));
+  const built=await Promise.all(pitches.map(p=>buildPitchReportData(v,p)));
   function make(withImages){ const zips=built.map(d=>renderReportZip(buf,d.data,d.sizeMap,withImages));
     const merged=(zips.length>1 && window.mergeDocxZips)?window.mergeDocxZips(zips):zips[0];
     return merged.generate({type:'blob',mimeType:DOCX_MIME}); }
@@ -914,7 +998,8 @@ async function publishVenueDrive(v){
     const files=[];
     files.push({name:sanitize(v.name)+'_data_'+today()+'.csv', content:csvForVenue(v), mime:'text/csv'});
     files.push({name:'Labosport_'+sanitize(v.name)+'_report_'+today()+'.docx', content:await buildVenueWordBlob(v,v.pitches), mime:DOCX_MIME});
-    v.pitches.forEach(p=>p.photos.forEach((ph,i)=>{ files.push({name:sanitize(p.name)+'_photo_'+(i+1)+'.jpg', content:dataUrlToUint8(ph.dataUrl), mime:'image/jpeg'}); }));
+    v.pitches.forEach(p=>{ p.photos.forEach((ph,i)=>{ files.push({name:sanitize(p.name)+'_photo_'+(i+1)+'.jpg', content:dataUrlToUint8(ph.dataUrl), mime:'image/jpeg'}); });
+      TESTS.forEach(t=>{ const ph=p.tests[t.key]&&p.tests[t.key].photos; if(ph) Object.keys(ph).forEach(pos=>{ (ph[pos]||[]).forEach((x,n)=>{ files.push({name:sanitize(p.name)+'_'+t.key+'_P'+(+pos+1)+'_'+(n+1)+'.jpg', content:dataUrlToUint8(x.dataUrl), mime:'image/jpeg'}); }); }); }); });
     await GDrive.publishToSubfolder(v.name, files, (n,tot)=>toast('<span class="spin"></span> Publishing “'+v.name+'” to Drive… '+n+'/'+tot));
     toast('Published “'+v.name+'” to Drive ✓ ('+files.length+' files)');
   }catch(e){ console.error(e); toast('⚠ Publish failed: '+(e.message||e)); }
@@ -926,7 +1011,7 @@ async function generateWord(v,pitchesArr){
   let buf;
   try{ const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')'); buf=await res.arrayBuffer(); }
   catch(e){ console.error(e); toast('⚠ Report failed: '+(e.message||e)); return; }
-  const built=pitches.map(p=>buildPitchReportData(v,p));
+  const built=await Promise.all(pitches.map(p=>buildPitchReportData(v,p)));
   const name = pitches.length>1 ? ('Labosport_'+sanitize(v.name)+'_all-pitches_'+today()+'.docx') : reportName(v,pitches[0],'docx');
   function make(withImages){
     const zips=built.map(d=>renderReportZip(buf,d.data,d.sizeMap,withImages));
@@ -1019,6 +1104,7 @@ function init(){
   document.querySelectorAll('.tabbar button').forEach(b=>b.onclick=()=>go(b.dataset.tab));
   $('pdfInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)handleBrief(f);};
   $('photoInput').onchange=e=>{const fs=e.target.files;e.target.value='';handlePhotos(fs);};
+  if($('obsPhotoInput'))$('obsPhotoInput').onchange=e=>{const fs=e.target.files;e.target.value='';handleObsPhotos(fs);};
   if($('photoLibInput'))$('photoLibInput').onchange=e=>{const fs=e.target.files;e.target.value='';handlePhotos(fs);};
   $('importInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importJSON(f);};
   // Google Drive two-way sync
