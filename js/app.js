@@ -1010,6 +1010,25 @@ function buildTestMapsImage(p){
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 
+/* single test-location map (one parameter) for Section 3 — title + pitch, returns {dataUrl,w,h} */
+function buildSingleTestMapImage(p,key){
+  const t=TKEY[key]; const cellW=620, mapH=300, titleH=40, pad=14;
+  const W=cellW+pad*2, H=mapH+titleH+pad*2;
+  const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+  const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
+  ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
+  drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key);
+  return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
+}
+/* Section 3 maps: which parameters, and the device-named caption beneath each. Edit captions here. */
+const SEC3_MAPS=[
+  ['shear','map_shear','cap_shear','Root zone shear strength — measured with a shear vane apparatus'],
+  ['clegg','map_clegg','cap_clegg','Clegg impact (compaction) — measured with a Clegg Impact Soil Tester'],
+  ['traction','map_traction','cap_traction','Surface traction (19 mm stud) — measured with a studded-disc rotational traction tester'],
+];
+
 function loadImage(src){ return new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>res(null); im.src=src; }); }
 /* composite of the soil-test observation photos, grouped by position (for report Appendix K) */
 async function buildSoilPhotosImage(p){
@@ -1046,6 +1065,12 @@ async function buildPitchReportData(v,p){
   data.photo_notes=p.photoNotes||'';
   try{ const tm=buildTestMapsImage(p); data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
   catch(e){ console.error('test-maps image failed:',e); data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+  // Section 3 — individual location maps for shear, compaction (clegg) and traction, each with a device caption.
+  SEC3_MAPS.forEach(([key,imgTag,capTag,caption])=>{
+    try{ const m=buildSingleTestMapImage(p,key); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h,440,430); }
+    catch(e){ console.error('section-3 map failed ('+key+'):',e); data[imgTag]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+    data[capTag]=caption;
+  });
   try{ const sp=await buildSoilPhotosImage(p);
     if(sp){ data.has_soil_photos=true; data.soil_photos=sp.dataUrl; sizeMap[sp.dataUrl]=fitBox(sp.w,sp.h,660,900); }
     else data.has_soil_photos=false;
