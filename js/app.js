@@ -446,7 +446,7 @@ function scrTest(key){
   const t=TKEY[key]; const p=pitch(); const td=p.tests[key]; const st=stats(td.values);
   const grid=td.values.map((v,i)=>`<div class="posbox ${v!=null?'done':''}">
     <div class="pn">P${i+1}</div>
-    <input data-pos="${i}" inputmode="decimal" placeholder="–" value="${v!=null?v:''}">
+    <input data-pos="${i}" inputmode="decimal" enterkeyhint="${i<td.values.length-1?'next':'done'}" placeholder="–" value="${v!=null?v:''}">
     <div class="pu">${esc(t.unit)||'&nbsp;'}</div></div>`).join('');
   const noteLine=t.note?`<div class="hint">${esc(t.note)}</div>`:'';
   const idx=TESTS.findIndex(x=>x.key===key), nx=TESTS[idx+1];
@@ -722,18 +722,25 @@ function bind(){
   app.querySelectorAll('[data-yn]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{const code=cur().split(':')[1];pitch().audit[code].fields[seg.dataset.yn]=b.dataset.v;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));save(true);}));
 
   // test entry
-  app.querySelectorAll('[data-pos]').forEach(inp=>inp.oninput=()=>{
-    const key=cur().split(':')[1],i=+inp.dataset.pos; const raw=inp.value.trim();
-    const val=raw===''?null:parseFloat(raw.replace(',','.')); pitch().tests[key].values[i]=(val==null||isNaN(val))?null:val;
-    const stored=pitch().tests[key].values[i];
-    inp.closest('.posbox').classList.toggle('done',stored!=null);
-    const g=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // live-update the map dot to show the value
-    if(g){ const done=stored!=null, lbl=done?shortNum(stored):String(i+1), tx=g.querySelector('text');
-      g.querySelector('circle').setAttribute('fill',done?'#1f7a4d':'#fff'); g.querySelector('circle').setAttribute('stroke',done?'#155c39':'#c2cad2');
-      tx.textContent=lbl; tx.setAttribute('fill',done?'#fff':'#6b7785'); tx.setAttribute('font-size',dotFontSVG(lbl)); }
-    const st=stats(pitch().tests[key].values);
-    $('tAvg').textContent=st.avg!=null?fmt(st.avg,''):'—'; $('tVar').textContent=st.varPct!=null?st.varPct+'%':'—'; $('tDone').textContent=st.done+'/'+TKEY[key].n;
-    save(true);
+  app.querySelectorAll('[data-pos]').forEach(inp=>{
+    inp.oninput=()=>{
+      const key=cur().split(':')[1],i=+inp.dataset.pos; const raw=inp.value.trim();
+      const val=raw===''?null:parseFloat(raw.replace(',','.')); pitch().tests[key].values[i]=(val==null||isNaN(val))?null:val;
+      const stored=pitch().tests[key].values[i];
+      inp.closest('.posbox').classList.toggle('done',stored!=null);
+      const g=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // live-update the map dot to show the value
+      if(g){ const done=stored!=null, lbl=done?shortNum(stored):String(i+1), tx=g.querySelector('text');
+        g.querySelector('circle').setAttribute('fill',done?'#1f7a4d':'#fff'); g.querySelector('circle').setAttribute('stroke',done?'#155c39':'#c2cad2');
+        tx.textContent=lbl; tx.setAttribute('fill',done?'#fff':'#6b7785'); tx.setAttribute('font-size',dotFontSVG(lbl)); }
+      const st=stats(pitch().tests[key].values);
+      $('tAvg').textContent=st.avg!=null?fmt(st.avg,''):'—'; $('tVar').textContent=st.varPct!=null?st.varPct+'%':'—'; $('tDone').textContent=st.done+'/'+TKEY[key].n;
+      save(true);
+    };
+    // Enter / keyboard "next" key → jump to the next position box (works on desktop + Android)
+    inp.onkeydown=ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); posNavGo(1); } };
+    // Show the Next/Prev accessory bar on touch devices (iOS decimal pad has no return key)
+    inp.onfocus=()=>posNavShow(inp);
+    inp.onblur=()=>{ setTimeout(()=>{ const a=document.activeElement; if(!a||!a.matches||!a.matches('[data-pos]')) posNavHide(); },120); };
   });
   bindPitchDrag();
   if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); save(true); render(); toast('Positions randomized'); };
@@ -1236,6 +1243,52 @@ function generatePDF(v,pitchesArr){
   try{ w.focus(); }catch(e){}
 }
 
+/* -------- position-entry keyboard nav (Next/Prev accessory bar) --------
+   The iOS numeric/decimal keypad has no return key, so a focused position box
+   can't be advanced from the keyboard. This sticky bar (pinned just above the
+   keyboard via visualViewport) lets the tester move Next/Prev without tapping
+   each box. On desktop/Android the Enter key handles it, so the bar only shows
+   on touch devices. */
+let _posInputs=[];
+const _isTouch = (typeof matchMedia==='function' && matchMedia('(pointer:coarse)').matches) || ('ontouchstart' in window);
+function _posList(){ return Array.from(document.querySelectorAll('#app [data-pos]')); }
+function posNavShow(inp){
+  if(!_isTouch) return;
+  const bar=$('keyNav'); if(!bar) return;
+  _posInputs=_posList(); const idx=_posInputs.indexOf(inp); if(idx<0) return;
+  const lbl=$('knLbl'); if(lbl) lbl.textContent='P'+(idx+1);
+  const prev=$('knPrev'); if(prev) prev.disabled = idx===0;
+  bar.hidden=false; posNavPosition();
+}
+function posNavHide(){ const bar=$('keyNav'); if(bar) bar.hidden=true; }
+function posNavGo(delta){
+  if(!_posInputs.length) _posInputs=_posList();
+  let idx=_posInputs.indexOf(document.activeElement);
+  if(idx<0) return;
+  const next=_posInputs[idx+delta];
+  if(next){
+    next.focus(); try{next.select();}catch(e){}
+    try{next.scrollIntoView({block:'center',behavior:'smooth'});}catch(e){}
+    const ni=_posInputs.indexOf(next), lbl=$('knLbl'), prev=$('knPrev');
+    if(lbl) lbl.textContent='P'+(ni+1); if(prev) prev.disabled=ni===0;
+  } else if(delta>0){                       // advanced past the last box → finish entry
+    const a=document.activeElement; if(a&&a.blur)a.blur(); posNavHide();
+  }
+}
+function posNavPosition(){
+  const bar=$('keyNav'); if(!bar||bar.hidden) return;
+  const vv=window.visualViewport;
+  bar.style.bottom = vv ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))+'px' : '0px';
+}
+function bindPosNav(){
+  const bar=$('keyNav'); if(!bar) return;
+  const hold=(el,fn)=>{ if(el) el.addEventListener('pointerdown',ev=>{ ev.preventDefault(); fn(); }); };
+  hold($('knPrev'),()=>posNavGo(-1));
+  hold($('knNext'),()=>posNavGo(1));
+  hold($('knDone'),()=>{ const a=document.activeElement; if(a&&a.blur)a.blur(); posNavHide(); });
+  if(window.visualViewport){ window.visualViewport.addEventListener('resize',posNavPosition); window.visualViewport.addEventListener('scroll',posNavPosition); }
+}
+
 /* ----------------------------- init ----------------------------- */
 function init(){
   load(); setupPdf();
@@ -1247,6 +1300,7 @@ function init(){
   if($('obsPhotoInput'))$('obsPhotoInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handleObsPhotos(fs);};
   if($('photoLibInput'))$('photoLibInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handlePhotos(fs);};
   $('importInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importJSON(f);};
+  bindPosNav();
   // Google Drive two-way sync
   if(window.GDrive){
     GDrive.configure({

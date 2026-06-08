@@ -108,6 +108,21 @@ h2.sec{font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(-
 .posbox input{width:100%;border:none;background:transparent;text-align:center;font-size:18px;font-weight:800;color:var(--ink);padding:2px 0}
 .posbox input:focus{outline:none}
 .posbox .pu{font-size:9px;color:var(--muted)}
+/* highlight the box that's currently being edited */
+.posbox:focus-within{border-color:var(--green);box-shadow:0 0 0 2px var(--green-l)}
+
+/* accessory bar pinned above the on-screen keyboard during value entry */
+.keynav{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:100%;max-width:460px;
+  display:flex;align-items:center;gap:8px;padding:8px 10px;
+  background:var(--card);border-top:1px solid var(--line);box-shadow:0 -3px 12px rgba(0,0,0,.10);
+  z-index:60;box-sizing:border-box}
+.keynav[hidden]{display:none}
+.keynav button{border:none;border-radius:10px;padding:11px 12px;font-size:15px;font-weight:700;cursor:pointer;line-height:1}
+.keynav .kn-next{flex:1;background:var(--green);color:#fff}
+.keynav .kn-next:active{background:var(--green-d)}
+.keynav .kn-side{background:#eef1f4;color:var(--ink)}
+.keynav .kn-side:disabled{opacity:.4}
+.keynav .kn-lbl{font-weight:800;color:var(--green-d);min-width:30px;text-align:center;font-size:14px}
 
 .pitchwrap{padding:6px 14px 2px}
 #pitchSvg{touch-action:none;user-select:none}
