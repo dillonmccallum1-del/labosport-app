@@ -1573,4 +1573,3 @@ function init(){
   if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 }
 document.addEventListener('DOMContentLoaded',init);
-#fun
