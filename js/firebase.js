@@ -127,6 +127,7 @@
     isSignedIn(){ return !!user; },
     userEmail(){ return user?(user.email||user.uid):''; },
     connect, connectEmail, disconnect, schedulePush, autoStart, markSeen,
+    deleteVenueDoc(id){ try{ delete lastSeen[id]; if(db&&id) db.collection('venues').doc(id).delete().catch(()=>{}); }catch(e){} },
     syncNow(){ pushChanges(); }
   };
 })();

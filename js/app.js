@@ -25,15 +25,15 @@ const AUDIT = [
   ['A','Field background','Staffing, sports, levels, games & sessions','Field usage',
     [['Number of grounds staff',TXT],['Sports played on the field',TXT],['Levels of play',TXT],['Games per year',TXT],['Practice sessions per year',TXT]]],
   ['B','Pitch dimensions, design & construction','Area, reinforcement, slope, levelness','Pitch dimensions',
-    [['Full playing surface area',TXT],['Reinforcement installed?',YN],['Reinforcement details',TXT],['Slope / gradient shape',TXT],['Levelness assessment',TXT]]],
+    [['Full playing surface area',TXT],['Reinforcement installed?',YN],['Reinforcement details',TXT],['Installation date',TXT],['Slope / gradient shape',TXT],['Slope / gradient assessment',TXT],['Levelness assessment',TXT],['Distance between post sockets',TXT]]],
   ['C','Performance, irrigation & water','Irrigation system, source, quality, perf. data','Irrigation and Water management',
-    [['Pop-up irrigation present?',YN],['Number of sprinkler heads',TXT],['Water supply source',TXT],['Water quality',TXT],['Performance data collected?',YN],['Performance data details',AREA]]],
+    [['Pop-up irrigation present?',YN],['Number of sprinkler heads',TXT],['Year installed',TXT],['Water supply source',TXT],['Water quality',TXT],['Operational issues / performance concerns',AREA],['Performance data collected?',YN],['Performance data details',AREA]]],
   ['D','Drainage & waterlogging','Ponding, duration, closures','Drainage & Waterlogging Performance',
-    [['Ponding / squelchy conditions?',YN],['Typical duration after heavy rain',TXT],['Occurrences per year',TXT],['Avg closure days per season (wet)',TXT]]],
+    [['Ponding / squelchy conditions?',YN],['Ponding / squelchy conditions (details)',AREA],['Typical duration after heavy rain',TXT],['Occurrences per year',TXT],['Avg closure days per season (wet)',TXT]]],
   ['E','Grass type, growth & seasonal','Species, disease / disorder','Soil profile',
     [['Grass species / turf type(s)',TXT],['Disease or disorder identified?',YN],['Disease / disorder details',AREA]]],
   ['F','Turf management resources','Equipment inventory','Resources',
-    [['Tractor',YN],['Cylinder mower',YN],['Pedestrian rotary mower',YN],['Aerator (tractor / pedestrian)',YN],['Boom sprayer',YN],['Top dresser',YN],['Line marker',YN],['Over-seeder / dimple-seeder',YN],['Drag mat / brush',YN]]],
+    [['Tractor',YN],['Cylinder mower',YN],['Pedestrian rotary mower',YN],['Fertilizer spreader',YN],['Pedestrian spreader',YN],['Tractor-mounted aerator',YN],['Line marker (Roller/Spray)',YN],['Top dresser',YN],['Boom sprayer',YN],['Over-seeder / Dimple-seeder',YN],['Tractor-drawn brush / Drag mat',YN],['Other',TXT]]],
   ['G','Maintenance operations','Fertilizer, herbicide, other','Additional aspects',
     [['Fertilizer applications/yr (type & rate)',AREA],['Herbicide applications per year',TXT],['Other turf management activities',AREA]]],
   ['H','Other risks','Playability risks & comments','Safety',
@@ -95,6 +95,8 @@ const LSKEY='labosport_v1';
 let state=null, CUR=null, CURP=0;
 
 function uid(){return 'id'+Math.random().toString(36).slice(2,9);}
+function nameKey(s){return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');}
+function seedId(name){return 'seed_'+nameKey(name);}   // stable id so re-seeding reconciles instead of duplicating
 function newPitch(name){
   const tests={}; TESTS.forEach(t=>tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}});
   const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
@@ -102,7 +104,7 @@ function newPitch(name){
   return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},photos:[],photoNotes:''};
 }
 function venueFromSeed(s){
-  const v={id:uid(),name:s.name,alias:s.alias,address:s.address,contact:s.contact,position:s.position,
+  const v={id:seedId(s.name),name:s.name,alias:s.alias,address:s.address,contact:s.contact,position:s.position,
     email:s.email,phone:s.phone,grass:s.grass,cluster:'Charlotte',wr:s.wr,venueComment:s.venueComment,
     params:s.params||{},briefLoaded:true,
     briefImages:s.briefImages||((window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[s.name])||[]),pitches:[]};
@@ -122,8 +124,9 @@ function venueFromParsed(pv){
 function mtext(s,re,g){ const m=(s||'').match(re); return m?String(g?m[g]:m[0]).trim():''; }
 function equipmentExtractors(){
   const map={'Tractor':/\btractor\b/i,'Cylinder mower':/cylinder mower/i,'Pedestrian rotary mower':/rotary mower/i,
-    'Aerator (tractor / pedestrian)':/aerat/i,'Boom sprayer':/boom sprayer/i,'Top dresser':/top ?dress/i,
-    'Line marker':/line marker/i,'Over-seeder / dimple-seeder':/over-?seeder|dimple/i,'Drag mat / brush':/drag ?mat|brush/i};
+    'Fertilizer spreader':/fertili[sz]er spreader/i,'Pedestrian spreader':/pedestrian spreader/i,
+    'Tractor-mounted aerator':/aerat/i,'Line marker (Roller/Spray)':/line marker/i,'Top dresser':/top ?dress/i,
+    'Boom sprayer':/boom sprayer/i,'Over-seeder / Dimple-seeder':/over-?seeder|dimple/i,'Tractor-drawn brush / Drag mat':/drag ?mat|brush/i};
   const out={}; Object.keys(map).forEach(k=>{ out[k]=(P)=> map[k].test(P['Resources']||'')?'Yes':''; }); return out;
 }
 const AUDIT_EXTRACT={
@@ -181,15 +184,24 @@ function extractAuditFields(v){
 }
 function freshState(){ return {version:1, tester:'', updatedAt:Date.now(), venues:SEED.map(venueFromSeed),
   benchmark:{benchId:'',rationale:'',comparisons:{}}}; }
+// Ensure a pitch has every test key with a correctly-sized values array.
+// Run on load AND on every venue arriving via team/device sync, so report
+// generation (which iterates ALL tests) never hits a missing key.
+function migratePitchTests(p){
+  if(!p) return p; if(!p.tests) p.tests={};
+  TESTS.forEach(t=>{ let td=p.tests[t.key];
+    if(!td){ td=p.tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; }   // add tests introduced in a newer version (e.g. moisture76)
+    if(!Array.isArray(td.values)) td.values=Array(t.n).fill(null);
+    if(td.values.length!==t.n){ const nv=Array(t.n).fill(null); for(let i=0;i<Math.min(td.values.length,t.n);i++)nv[i]=td.values[i]; td.values=nv; td.positions=null; }
+    if(!td.photos) td.photos={}; });
+  return p;
+}
 function load(){
   try{const raw=localStorage.getItem(LSKEY); if(raw){state=JSON.parse(raw); if(!state.updatedAt)state.updatedAt=Date.now();
     try{ (state.venues||[]).forEach(v=>{ extractAuditFields(v);
       if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name];
-      (v.pitches||[]).forEach(p=>{ if(!p.tests)p.tests={}; TESTS.forEach(t=>{ let td=p.tests[t.key];
-        if(!td){ td=p.tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; }   // add tests introduced in a newer version (e.g. moisture76)
-        if(!Array.isArray(td.values)) td.values=Array(t.n).fill(null);
-        if(td.values.length!==t.n){ const nv=Array(t.n).fill(null); for(let i=0;i<Math.min(td.values.length,t.n);i++)nv[i]=td.values[i]; td.values=nv; td.positions=null; }
-        if(!td.photos) td.photos={}; }); }); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
+      (v.pitches||[]).forEach(migratePitchTests); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
+    try{ dedupeVenues(); }catch(e){}                              // collapse any same-name duplicate venues
     return;}}catch(e){}
   state=freshState(); save();
 }
@@ -213,9 +225,11 @@ function applyRemoteVenue(remote){
   remote.briefImages = (local&&local.briefImages)?local.briefImages:(remote.briefImages||[]);
   (remote.pitches||[]).forEach(rp=>{ const lp=local&&(local.pitches||[]).find(x=>x.id===rp.id); rp.photos=(lp&&lp.photos)?lp.photos:(rp.photos||[]);
     // preserve local per-observation test photos too (not carried in the team DB)
-    if(rp.tests) Object.keys(rp.tests).forEach(k=>{ const lph=lp&&lp.tests&&lp.tests[k]&&lp.tests[k].photos; rp.tests[k].photos=lph||rp.tests[k].photos||{}; }); });
+    if(rp.tests) Object.keys(rp.tests).forEach(k=>{ const lph=lp&&lp.tests&&lp.tests[k]&&lp.tests[k].photos; rp.tests[k].photos=lph||rp.tests[k].photos||{}; });
+    migratePitchTests(rp); });   // backfill any test keys missing from the synced copy, else reports get a blank test-positions map
   if(i>=0) state.venues[i]=remote; else state.venues.push(remote);
   if(window.FB) FB.markSeen(remote);
+  try{ dedupeVenues(); }catch(e){}                              // a re-seeded copy may arrive with a new id → collapse it
   save(false,{keepStamp:true,noSync:true,noFB:true});
   if(!ENTRY_ROUTES.test(cur())) render();                       // don't yank focus while entering data
   else toast('Team update received for “'+remote.name+'”');
@@ -230,6 +244,50 @@ function removeRemoteVenue(id){
 }
 function venue(){return state.venues.find(v=>v.id===CUR);}
 function pitch(){const v=venue(); return v?v.pitches[CURP]:null;}
+
+/* ---- duplicate cleanup: collapse same-name venues (e.g. from a re-seed under a new id) ---- */
+function venueDataScore(v){ let s=0;
+  (v.pitches||[]).forEach(p=>{
+    TESTS.forEach(t=>{ const td=p.tests&&p.tests[t.key]; if(td&&Array.isArray(td.values)) s+=td.values.filter(x=>x!=null).length; });
+    AUDIT.forEach(a=>{ const f=p.audit&&p.audit[a[0]]&&p.audit[a[0]].fields; if(f) s+=Object.values(f).filter(x=>x!=null&&String(x).trim()!=='').length; });
+    if(p.overall&&p.overall.level) s++;
+  });
+  return s;
+}
+// copy any non-empty data from `l` into blanks of `w` so a merge never loses entries
+function mergeVenueInto(w,l){
+  ['alias','address','contact','position','email','phone','grass','wr','venueComment','cluster'].forEach(k=>{ if((!w[k]||!String(w[k]).trim())&&l[k]) w[k]=l[k]; });
+  if((!w.params||!Object.keys(w.params).length)&&l.params) w.params=l.params;
+  if(l.briefLoaded) w.briefLoaded=true;
+  if((!w.briefImages||!w.briefImages.length)&&l.briefImages&&l.briefImages.length) w.briefImages=l.briefImages;
+  (l.pitches||[]).forEach((lp,pi)=>{ const wp=w.pitches&&w.pitches[pi]; if(!wp) return;
+    TESTS.forEach(t=>{ const lt=lp.tests&&lp.tests[t.key], wt=wp.tests&&wp.tests[t.key]; if(!lt||!wt) return;
+      (lt.values||[]).forEach((val,vi)=>{ if(val!=null && wt.values[vi]==null) wt.values[vi]=val; });
+      if((!wt.comment||!wt.comment.trim())&&lt.comment) wt.comment=lt.comment;
+      if((!wt.method||!wt.method.trim())&&lt.method) wt.method=lt.method; });
+    AUDIT.forEach(a=>{ const lf=lp.audit&&lp.audit[a[0]]&&lp.audit[a[0]].fields, wf=wp.audit&&wp.audit[a[0]]&&wp.audit[a[0]].fields; if(!lf||!wf) return;
+      Object.keys(lf).forEach(k=>{ if((wf[k]==null||String(wf[k]).trim()==='')&&lf[k]!=null&&String(lf[k]).trim()!=='') wf[k]=lf[k]; }); });
+    if(lp.overall&&lp.overall.level&&(!wp.overall||!wp.overall.level)) wp.overall=lp.overall; });
+}
+function dedupeVenues(){
+  const groups={};
+  state.venues.forEach(v=>{ const k=nameKey(v.name); (groups[k]=groups[k]||[]).push(v); });
+  const removeIds=[];
+  Object.values(groups).forEach(list=>{ if(list.length<2) return;
+    // winner = the well-formed one (has pitches), then the most data, then the most recently updated
+    list.sort((a,b)=>{ const pa=(a.pitches&&a.pitches.length)?1:0, pb=(b.pitches&&b.pitches.length)?1:0;
+      if(pa!==pb) return pb-pa; const da=venueDataScore(a), db=venueDataScore(b);
+      if(da!==db) return db-da; return (b.updatedAt||0)-(a.updatedAt||0); });
+    const win=list[0];
+    for(let i=1;i<list.length;i++){ mergeVenueInto(win,list[i]); removeIds.push(list[i].id); }
+  });
+  if(!removeIds.length) return false;
+  const rm=new Set(removeIds);
+  if(CUR&&rm.has(CUR)){ CUR=null; stack=['home']; }   // we're viewing a dropped duplicate → go home
+  state.venues=state.venues.filter(v=>!rm.has(v.id));
+  if(window.FB&&FB.deleteVenueDoc) removeIds.forEach(id=>{ if(id) FB.deleteVenueDoc(id); });   // remove stale copy from the team database
+  return true;
+}
 
 /* ----------------------------- helpers ----------------------------- */
 const $=id=>document.getElementById(id);
@@ -590,8 +648,8 @@ function defaultPositions(n){
   else pts=[[.16,.3],[.16,.7],[.38,.3],[.38,.7],[.5,.3],[.5,.7],[.62,.3],[.62,.7],[.84,.3],[.84,.7],[.5,.12],[.5,.88]];
   return pts.slice(0,n).map(p=>p.slice());
 }
-function testPositions(p,key){ const t=TKEY[key]; const td=p.tests[key];
-  if(td.positions&&td.positions.length===t.n) return td.positions; return defaultPositions(t.n); }
+function testPositions(p,key){ const t=TKEY[key]; const td=p.tests&&p.tests[key];
+  if(td&&td.positions&&td.positions.length===t.n) return td.positions; return defaultPositions(t.n); }
 function randomPositions(n){ const pts=[], minD=Math.max(0.08,0.5/Math.sqrt(n));
   for(let i=0;i<n;i++){ let best=null;
     for(let tries=0;tries<30;tries++){ const c=[0.05+Math.random()*0.9, 0.08+Math.random()*0.84];
@@ -800,32 +858,55 @@ async function handleBrief(file){
   }catch(e){ console.error(e); toast('⚠ Failed to read PDF: '+e.message); }
 }
 
-/* photo capture with downscale — pushes a {id,dataUrl,w,h} into the given target array (default = pitch photos) */
-function addPhotoFile(file, target){ return new Promise(resolve=>{
-  const reader=new FileReader();
-  reader.onload=()=>{ const img=new Image();
-    img.onload=()=>{ const max=1000; let w=img.width,h=img.height; if(w>h&&w>max){h=h*max/w;w=max;} else if(h>max){w=w*max/h;h=max;}
-      const c=document.createElement('canvas'); c.width=w;c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
-      (target||pitch().photos).push({id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:Math.round(w),h:Math.round(h)}); resolve(true); };
-    img.onerror=()=>resolve(false); img.src=reader.result; };
-  reader.onerror=()=>resolve(false); reader.readAsDataURL(file);
-}); }
+/* photo capture with downscale — pushes a {id,dataUrl,w,h} into the given target array (default = pitch photos).
+   Decodes via createImageBitmap first (handles iPhone HEIC/HEIF library photos and applies EXIF orientation),
+   then falls back to FileReader+Image for older browsers. Returns true only if a photo was actually stored. */
+async function decodeToBitmap(file){
+  // Preferred: createImageBitmap can decode HEIC/HEIF on modern iOS Safari and is faster.
+  try{ const bmp=await createImageBitmap(file,{imageOrientation:'from-image'}); if(bmp&&bmp.width) return bmp; }catch(e){}
+  try{ const bmp=await createImageBitmap(file); if(bmp&&bmp.width) return bmp; }catch(e){}
+  // Fallback: FileReader → Image (JPEG/PNG everywhere; cannot decode HEIC).
+  try{
+    return await new Promise((res,rej)=>{ const r=new FileReader();
+      r.onload=()=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>rej(new Error('decode')); im.src=r.result; };
+      r.onerror=()=>rej(new Error('read')); r.readAsDataURL(file); });
+  }catch(e){ return null; }
+}
+async function addPhotoFile(file, target){
+  const src=await decodeToBitmap(file);
+  if(!src) return false;
+  const max=1000; let w=src.width||src.naturalWidth, h=src.height||src.naturalHeight;
+  if(!w||!h){ if(src.close)try{src.close();}catch(e){} return false; }
+  if(w>h&&w>max){h=h*max/w;w=max;} else if(h>max){w=w*max/h;h=max;}
+  const c=document.createElement('canvas'); c.width=Math.round(w); c.height=Math.round(h);
+  c.getContext('2d').drawImage(src,0,0,c.width,c.height);
+  if(src.close)try{src.close();}catch(e){}
+  (target||pitch().photos).push({id:uid(),dataUrl:c.toDataURL('image/jpeg',0.6),w:c.width,h:c.height});
+  return true;
+}
+function pickImageFiles(fileList){
+  // Accept by MIME type, or by extension when the type is blank (common for multi-select from the library).
+  return Array.from(fileList||[]).filter(f=>f&&(/^image\//.test(f.type||'')||/\.(jpe?g|png|heic|heif|webp|gif|tiff?)$/i.test(f.name||'')));
+}
 async function handlePhotos(fileList){
-  const files=Array.from(fileList||[]).filter(f=>f&&/^image\//.test(f.type||'')); if(!files.length) return;
+  const files=pickImageFiles(fileList); if(!files.length){ toast('⚠ No image files selected'); return; }
   toast('<span class="spin"></span> Adding photo'+(files.length>1?'s':'')+'…');
-  for(const f of files){ try{ await addPhotoFile(f); }catch(e){} }
-  try{ save(); render(); toast('Added '+files.length+' photo'+(files.length>1?'s':'')+' ✓'); }
-  catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); }
+  let ok=0; for(const f of files){ try{ if(await addPhotoFile(f)) ok++; }catch(e){} }
+  try{ save(); render(); }catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); return; }
+  if(ok===files.length) toast('Added '+ok+' photo'+(ok>1?'s':'')+' ✓');
+  else if(ok>0) toast('Added '+ok+' of '+files.length+' — '+(files.length-ok)+" couldn't be read");
+  else toast("⚠ Couldn't read "+(files.length>1?'those photos':'that photo')+" — try Settings ▸ Camera ▸ Formats ▸ Most Compatible");
 }
 let obsTarget=null;   // {key,pos} for the test-observation photo currently being added
 async function handleObsPhotos(fileList){
-  const files=Array.from(fileList||[]).filter(f=>f&&/^image\//.test(f.type||'')); if(!files.length||!obsTarget) return;
+  const files=pickImageFiles(fileList); if(!files.length||!obsTarget){ if(!files.length)toast('⚠ No image files selected'); return; }
   const {key,pos}=obsTarget; const td=pitch().tests[key]; if(!td.photos)td.photos={}; if(!td.photos[pos])td.photos[pos]=[];
   toast('<span class="spin"></span> Adding photo'+(files.length>1?'s':'')+'…');
-  for(const f of files){ try{ await addPhotoFile(f, td.photos[pos]); }catch(e){} }
+  let ok=0; for(const f of files){ try{ if(await addPhotoFile(f, td.photos[pos])) ok++; }catch(e){} }
   obsTarget=null;
-  try{ save(); render(); toast('Photo added to P'+(pos+1)+' ✓'); }
-  catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); }
+  try{ save(); render(); }catch(e){ render(); toast('⚠ Storage full — remove some photos or export a backup'); return; }
+  if(ok) toast('Photo'+(ok>1?'s':'')+' added to P'+(pos+1)+' ✓');
+  else toast("⚠ Couldn't read that photo — try Settings ▸ Camera ▸ Formats ▸ Most Compatible");
 }
 
 /* ----------------------------- exports ----------------------------- */
@@ -865,11 +946,11 @@ function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const o
 // app audit field label -> template tag, per section
 const REPORT_MAP = {
   A:{'Number of grounds staff':'a_staff','Sports played on the field':'a_sports','Levels of play':'a_levels','Games per year':'a_games','Practice sessions per year':'a_sessions'},
-  B:{'Full playing surface area':'b_area','Reinforcement installed?':'b_reinf','Reinforcement details':'b_reinf_details','Slope / gradient shape':'b_slope','Levelness assessment':'b_level'},
-  C:{'Pop-up irrigation present?':'c_popup','Number of sprinkler heads':'c_heads','Water supply source':'c_source','Water quality':'c_quality','Performance data collected?':'c_perf','Performance data details':'c_perf_details'},
-  D:{'Ponding / squelchy conditions?':'d_ponding','Typical duration after heavy rain':'d_duration','Occurrences per year':'d_occur','Avg closure days per season (wet)':'d_closure'},
+  B:{'Full playing surface area':'b_area','Reinforcement installed?':'b_reinf','Reinforcement details':'b_reinf_details','Installation date':'b_install','Slope / gradient shape':'b_slope','Slope / gradient assessment':'b_slope_assess','Levelness assessment':'b_level','Distance between post sockets':'b_sockets'},
+  C:{'Pop-up irrigation present?':'c_popup','Number of sprinkler heads':'c_heads','Year installed':'c_year','Water supply source':'c_source','Water quality':'c_quality','Operational issues / performance concerns':'c_issues','Performance data collected?':'c_perf','Performance data details':'c_perf_details'},
+  D:{'Ponding / squelchy conditions?':'d_ponding','Ponding / squelchy conditions (details)':'d_details','Typical duration after heavy rain':'d_duration','Occurrences per year':'d_occur','Avg closure days per season (wet)':'d_closure'},
   E:{'Grass species / turf type(s)':'e_species','Disease or disorder identified?':'e_disease','Disease / disorder details':'e_disease_details'},
-  F:{'Tractor':'f_tractor','Cylinder mower':'f_cylinder','Pedestrian rotary mower':'f_rotary','Aerator (tractor / pedestrian)':'f_aerator','Boom sprayer':'f_boom','Top dresser':'f_topdresser','Line marker':'f_linemarker','Over-seeder / dimple-seeder':'f_overseed','Drag mat / brush':'f_dragmat'},
+  F:{'Tractor':'f_tractor','Cylinder mower':'f_cylinder','Pedestrian rotary mower':'f_rotary','Fertilizer spreader':'f_fertspread','Pedestrian spreader':'f_pedspread','Tractor-mounted aerator':'f_aerator','Line marker (Roller/Spray)':'f_linemarker','Top dresser':'f_topdresser','Boom sprayer':'f_boom','Over-seeder / Dimple-seeder':'f_overseed','Tractor-drawn brush / Drag mat':'f_dragmat','Other':'f_other'},
   G:{'Fertilizer applications/yr (type & rate)':'g_fert','Herbicide applications per year':'g_herb','Other turf management activities':'g_other'},
   H:{'Additional playability risks':'h_risks','General comments on surface / maintenance':'h_comments'},
 };
@@ -903,7 +984,7 @@ function fitBox(w,h,maxW,maxH){ const s=Math.min(maxW/w,maxH/h); return [Math.ro
 
 /* render one test's pitch map onto a canvas region */
 function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key){
-  const pos=testPositions(p,key), vals=p.tests[key].values, pad=w*0.04;
+  const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[], pad=w*0.04;
   ctx.fillStyle='#cfe8d6'; ctx.fillRect(ox+pad,oy+pad,w-2*pad,h-2*pad);
   ctx.strokeStyle='#9cc9ad'; ctx.lineWidth=2; ctx.strokeRect(ox+pad,oy+pad,w-2*pad,h-2*pad);
   ctx.beginPath(); ctx.moveTo(ox+w/2,oy+pad); ctx.lineTo(ox+w/2,oy+h-pad); ctx.stroke();
@@ -921,7 +1002,7 @@ function buildTestMapsImage(p){
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   TESTS.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
-    const st=stats(p.tests[t.key].values);
+    const st=stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]);
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
     ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
     drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key);
@@ -964,7 +1045,7 @@ async function buildPitchReportData(v,p){
     else { data[key]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
   data.photo_notes=p.photoNotes||'';
   try{ const tm=buildTestMapsImage(p); data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
-  catch(e){ data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+  catch(e){ console.error('test-maps image failed:',e); data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
   try{ const sp=await buildSoilPhotosImage(p);
     if(sp){ data.has_soil_photos=true; data.soil_photos=sp.dataUrl; sizeMap[sp.dataUrl]=fitBox(sp.w,sp.h,660,900); }
     else data.has_soil_photos=false;
@@ -1104,9 +1185,9 @@ function init(){
   $('settingsBtn').onclick=()=>go('settings');
   document.querySelectorAll('.tabbar button').forEach(b=>b.onclick=()=>go(b.dataset.tab));
   $('pdfInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)handleBrief(f);};
-  $('photoInput').onchange=e=>{const fs=e.target.files;e.target.value='';handlePhotos(fs);};
-  if($('obsPhotoInput'))$('obsPhotoInput').onchange=e=>{const fs=e.target.files;e.target.value='';handleObsPhotos(fs);};
-  if($('photoLibInput'))$('photoLibInput').onchange=e=>{const fs=e.target.files;e.target.value='';handlePhotos(fs);};
+  $('photoInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handlePhotos(fs);};
+  if($('obsPhotoInput'))$('obsPhotoInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handleObsPhotos(fs);};
+  if($('photoLibInput'))$('photoLibInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handlePhotos(fs);};
   $('importInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importJSON(f);};
   // Google Drive two-way sync
   if(window.GDrive){
