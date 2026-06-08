@@ -208,7 +208,13 @@ function load(){
 let saveTimer=null;
 function save(flash,opts){
   opts=opts||{};
-  if(!opts.keepStamp) state.updatedAt=Date.now();
+  if(!opts.keepStamp){ state.updatedAt=Date.now();
+    // Stamp the venue being edited with a local _ts. Without this, locally-edited
+    // venues had no _ts (0), so applyRemoteVenue's last-write-wins check let ANY
+    // remote snapshot overwrite fresh edits on reopen — i.e. data appeared to "not
+    // save". Now a remote copy must be strictly newer than this local edit to win.
+    const _v=state.venues&&state.venues.find(x=>x.id===CUR); if(_v) _v._ts=Date.now();
+  }
   try{ localStorage.setItem(LSKEY, JSON.stringify(state));
     if(flash){const s=document.getElementById('savedFlag'); if(s){s.classList.add('show'); clearTimeout(saveTimer); saveTimer=setTimeout(()=>s.classList.remove('show'),900);} }
   }catch(e){ toast('⚠ Storage full — export a backup and remove some photos'); }
