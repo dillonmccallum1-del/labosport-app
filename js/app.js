@@ -185,7 +185,8 @@ function load(){
   try{const raw=localStorage.getItem(LSKEY); if(raw){state=JSON.parse(raw); if(!state.updatedAt)state.updatedAt=Date.now();
     try{ (state.venues||[]).forEach(v=>{ extractAuditFields(v);
       if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name];
-      (v.pitches||[]).forEach(p=>{ TESTS.forEach(t=>{ const td=p.tests&&p.tests[t.key]; if(!td)return;   // resize values if a test's position count changed
+      (v.pitches||[]).forEach(p=>{ if(!p.tests)p.tests={}; TESTS.forEach(t=>{ let td=p.tests[t.key];
+        if(!td){ td=p.tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; }   // add tests introduced in a newer version (e.g. moisture76)
         if(!Array.isArray(td.values)) td.values=Array(t.n).fill(null);
         if(td.values.length!==t.n){ const nv=Array(t.n).fill(null); for(let i=0;i<Math.min(td.values.length,t.n);i++)nv[i]=td.values[i]; td.values=nv; td.positions=null; }
         if(!td.photos) td.photos={}; }); }); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
@@ -285,7 +286,7 @@ function render(){
 /* ----------------------------- screens ----------------------------- */
 function venueProgress(v){
   let done=0,total=0;
-  v.pitches.forEach(p=>{ TESTS.forEach(t=>{total++; if(stats(p.tests[t.key].values).done>0)done++;}); });
+  v.pitches.forEach(p=>{ TESTS.forEach(t=>{total++; const td=p.tests&&p.tests[t.key]; if(td&&stats(td.values).done>0)done++;}); });
   return total?Math.round(done/total*100):0;
 }
 function scrHome(){
