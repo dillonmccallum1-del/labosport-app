@@ -655,6 +655,7 @@ function scrSettings(){
       <div class="row" id="expJson"><div class="ic">⤓</div><div class="meta"><div class="t">Export backup (JSON)</div><div class="d">All venues & data — keep it safe</div></div><span class="chev">›</span></div>
       <div class="row" id="impJson"><div class="ic">⤒</div><div class="meta"><div class="t">Import backup (JSON)</div><div class="d">Restore from a backup file</div></div><span class="chev">›</span></div>
       <div class="row" id="expCsvAll"><div class="ic">▦</div><div class="meta"><div class="t">Export all data (CSV)</div><div class="d">Open in Excel / Sheets</div></div><span class="chev">›</span></div>
+      <div class="row" id="impCsv"><div class="ic">⤒</div><div class="meta"><div class="t">Import data (CSV)</div><div class="d">Restore lost readings & answers from an exported CSV — fills empty spots only</div></div><span class="chev">›</span></div>
     </div>
     <h2 class="sec">About</h2>
     <div class="card" style="padding:14px;font-size:13px;line-height:1.6;color:var(--ink)">
@@ -827,6 +828,7 @@ function bind(){
   if($('expJson'))$('expJson').onclick=exportJSON;
   if($('impJson'))$('impJson').onclick=()=>$('importInput').click();
   if($('expCsvAll'))$('expCsvAll').onclick=()=>exportCSV(null);
+  if($('impCsv'))$('impCsv').onclick=()=>$('csvImportInput').click();
   if($('clearAll'))$('clearAll').onclick=()=>{if(confirm('Reset ALL data and reload the two seed venues? Export a backup first if unsure.')){state=freshState();save();go('home');}};
 }
 
@@ -992,6 +994,68 @@ function exportCSV(onlyVenue){
 }
 function exportJSON(){ dl('labosport_backup_'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(state,null,2),'application/json'); toast('Backup exported'); }
 function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const obj=JSON.parse(r.result); if(!obj.venues)throw new Error('not a backup'); if(confirm('Replace all current data with this backup?')){state=obj;save();go('home');toast('Backup restored');} }catch(e){ toast('⚠ Invalid backup file'); } }; r.readAsText(file); }
+
+/* ---- CSV import: restore lost readings & survey answers from an exported CSV. Fills EMPTY spots only. ---- */
+function parseCSV(text){   // quote-aware: handles commas, escaped "" and newlines inside quoted cells
+  const rows=[]; let row=[], cur='', q=false; text=String(text||'').replace(/\r\n?/g,'\n');
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else if(c==='"') q=true;
+    else if(c===',') { row.push(cur); cur=''; }
+    else if(c==='\n'){ row.push(cur); rows.push(row); row=[]; cur=''; }
+    else cur+=c;
+  }
+  if(cur!==''||row.length){ row.push(cur); rows.push(row); }
+  return rows;
+}
+function newVenueNamed(name){ return {id:uid(),name:name||'Imported venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[]}; }
+function applyCsvData(rows){
+  const testKey={}; TESTS.forEach(t=>testKey[t.name]=t.key);
+  const riskKey={}; RISK.forEach(([k,label])=>riskKey[label]=k);
+  const sum={filled:0,vNew:0,pNew:0};
+  const lvl=v=>{ const m=String(v).match(/\d+/); const n=m?+m[0]:0; return (n>=1&&n<=4)?n:0; };
+  function getVenue(name){ let v=state.venues.find(x=>x.name===name); if(!v){ v=newVenueNamed(name); state.venues.push(v); sum.vNew++; } return v; }
+  function getPitch(v,name){ let p=v.pitches.find(x=>x.name===name); if(!p){ p=newPitch(name); migratePitchTests(p); v.pitches.push(p); sum.pNew++; } return p; }
+  rows.forEach((r,ri)=>{
+    if(!r||r.length<5) return;
+    const venueN=String(r[0]||''), pitchN=String(r[1]||''), cat=String(r[2]||''), item=String(r[3]||''), valRaw=String(r[4]==null?'':r[4]);
+    if(ri===0 && venueN==='Venue') return;                       // header row
+    if(!venueN||!pitchN||!cat) return;
+    const val=valRaw.trim(); if(val==='') return;
+    const v=getVenue(venueN), p=getPitch(v,pitchN);
+    const fillStr=(obj,key)=>{ if(!obj[key]||!String(obj[key]).trim()){ obj[key]=valRaw; sum.filled++; } };
+    if(cat.indexOf('Test: ')===0){                               // a position reading, e.g. P6
+      const key=testKey[cat.slice(6)]; const td=key&&p.tests[key]; if(!td) return;
+      const i=parseInt(item.replace(/[^0-9]/g,''),10)-1; if(isNaN(i)||i<0||i>=td.values.length) return;
+      const num=parseFloat(val.replace(',','.')); if(isNaN(num)) return;
+      if(td.values[i]==null){ td.values[i]=num; sum.filled++; }
+    }
+    else if(cat==='Test method'){ const key=testKey[item]; if(key&&p.tests[key]) fillStr(p.tests[key],'method'); }
+    else if(cat==='Test comment'){ const key=testKey[item]; if(key&&p.tests[key]) fillStr(p.tests[key],'comment'); }
+    else if(cat.indexOf('Audit ')===0 && / brief$/.test(cat)){ const code=cat.split(' ')[1]; if(p.audit[code]) fillStr(p.audit[code],'brief'); }
+    else if(cat.indexOf('Audit ')===0){ const code=cat.split(' ')[1]; const a=p.audit[code]; if(a){ if(!a.fields[item]||!String(a.fields[item]).trim()){ a.fields[item]=valRaw; sum.filled++; } } }
+    else if(cat==='Risk'){ const key=riskKey[item], n=lvl(val); if(key&&n&&!p.risk[key]){ p.risk[key]=n; sum.filled++; } }
+    else if(cat==='Overall'){ if(/risk rating/i.test(item)){ const n=lvl(val); if(n&&!p.overall.level){ p.overall.level=n; sum.filled++; } } else if(/comment/i.test(item)){ fillStr(p.overall,'comment'); } }
+    else if(cat==='Photos' && /notes/i.test(item)){ fillStr(p,'photoNotes'); }
+    // skipped: 'Test summary' (derived), 'Photos'/'Count', 'Observation photos' (photos aren't in CSV)
+  });
+  return sum;
+}
+function importCSV(file){
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const rows=parseCSV(r.result), head=rows[0]||[];
+      if(!(head[0]==='Venue' && head.indexOf('Value')>=0)) throw new Error('not a labosport CSV');
+      const vp=new Set(); rows.slice(1).forEach(x=>{ if(x[0]&&x[1]) vp.add(x[0]+' › '+x[1]); });
+      if(!confirm('Import data from this CSV?\n\n'+vp.size+' pitch(es) found. Only EMPTY fields are filled — nothing you already have is changed. (Photos and venue contact details aren’t stored in CSV.)')) return;
+      const sum=applyCsvData(rows);
+      save(); go('home'); render();
+      toast('Imported · '+sum.filled+' field(s) filled'+(sum.vNew?' · '+sum.vNew+' venue(s) added':'')+(sum.pNew?' · '+sum.pNew+' pitch(es) added':''));
+    }catch(e){ toast('⚠ Invalid CSV file'); }
+  };
+  r.readAsText(file);
+}
 
 /* ----------------------------- report generation ----------------------------- */
 // app audit field label -> template tag, per section
@@ -1333,6 +1397,7 @@ function init(){
   if($('obsPhotoInput'))$('obsPhotoInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handleObsPhotos(fs);};
   if($('photoLibInput'))$('photoLibInput').onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value='';handlePhotos(fs);};
   $('importInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importJSON(f);};
+  if($('csvImportInput'))$('csvImportInput').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importCSV(f);};
   bindPosNav();
   // Google Drive two-way sync
   if(window.GDrive){
