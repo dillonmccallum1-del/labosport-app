@@ -1370,16 +1370,19 @@ function renderReportZip(buf,data,sizeMap,withImages){
   const modules=[];
   if(withImages && window.ImageModule){
     let nextExt='png';
-    const WHITE_BYTES=new Uint8Array(b64ToArrayBuffer(WHITE_PX));
+    // Fresh placeholder bytes per call — never share one buffer between images:
+    // PizZip may transfer/detach the buffer on generate, and a reused (detached)
+    // buffer throws "assign to read-only property" on iOS.
+    const whiteBytes=()=>new Uint8Array(b64ToArrayBuffer(WHITE_PX));
     const mod=new window.ImageModule({centered:true,
       // Never throw from here: a single malformed/HEIC/blob image must not blank
       // every image in the report. Bad tags fall back to a 1px white placeholder.
       getImage:tag=>{ try{
-          if(typeof tag!=='string' || tag.indexOf('base64,')<0){ nextExt='png'; return WHITE_BYTES; }
+          if(typeof tag!=='string' || tag.indexOf('base64,')<0){ nextExt='png'; return whiteBytes(); }
           const u=new Uint8Array(b64ToArrayBuffer(tag));
-          if(!u.length){ nextExt='png'; return WHITE_BYTES; }
+          if(!u.length){ nextExt='png'; return whiteBytes(); }
           nextExt=imgExtFromBytes(u); return u;
-        }catch(e){ console.warn('report image decode failed, using placeholder',e); nextExt='png'; return WHITE_BYTES; } },
+        }catch(e){ console.warn('report image decode failed, using placeholder',e); nextExt='png'; return whiteBytes(); } },
       getSize:(img,tag)=>{ const s=sizeMap[tag]; return (Array.isArray(s)&&s[0]>0&&s[1]>0)?s:[235,150]; }});
     // getImage() always runs immediately before getNextImageName() for the same image,
     // so nextExt is the format of the image about to be written — use it for the filename.
