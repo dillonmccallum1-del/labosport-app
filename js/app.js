@@ -424,13 +424,15 @@ function render(){
 
 /* ----------------------------- screens ----------------------------- */
 function venueProgress(v){
+  // Granular: every individual measurement counts, so the bar moves on each value entered
+  // (not just when a test parameter gets its first reading).
   let done=0,total=0;
-  v.pitches.forEach(p=>{ TESTS.forEach(t=>{total++; const td=p.tests&&p.tests[t.key]; if(td&&stats(td.values).done>0)done++;}); });
+  v.pitches.forEach(p=>{ TESTS.forEach(t=>{ const td=p.tests&&p.tests[t.key]; total+=(t.n||0); if(td) done+=stats(td.values).done; }); });
   return total?Math.round(done/total*100):0;
 }
 function scrHome(){
   const cards=state.venues.map(v=>{
-    const prog=v.briefLoaded?Math.max(12,venueProgress(v)):8;
+    const prog=venueProgress(v);   // bar reflects real progress for both brief & manual venues
     const state_=v.briefLoaded?'<span class="chip brief">Brief loaded ✓</span>':'<span class="chip ghost">Manual</span>';
     return `<div class="card"><div class="venue" data-open="${v.id}">
       <div class="vh"><div><div class="vn">${esc(v.name)}</div><div class="va">${esc(v.alias?('AKA '+v.alias):v.address)}</div></div>${state_}</div>
