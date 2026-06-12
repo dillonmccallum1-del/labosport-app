@@ -57,6 +57,13 @@ const RISK = [
   ['resources','Resources'],['additional','Additional aspects'],
 ];
 const RLABEL = {1:'Low',2:'Moderate',3:'High',4:'Critical'};
+// Risk-box colouring for the Word report. Each *_score (and the overall) cell in
+// report_template.docx carries a unique sentinel fill; after rendering we swap it
+// for the colour of that pitch's actual level (matches the in-app chip palette).
+const RISK_LEVEL_COLOR = {0:'D9D9D9',1:'2E9E5B',2:'E0A000',3:'E8731F',4:'E92840'};
+const RISK_SENTINEL = {overall:'AA00FF',field_usage:'AA0001',pitch_dim:'AA0002',soil:'AA0003',
+  irrigation:'AA0004',drainage:'AA0005',surface:'AA0006',safety:'AA0007',turf_mgmt:'AA0008',
+  resources:'AA0009',additional:'AA000A'};
 
 /* ----------------------------- seed data (from the two Charlotte briefs) ----------------------------- */
 const SEED = [
@@ -1231,6 +1238,10 @@ function buildReportData(v,p){
   d.overall_label = ol?(RLABEL[ol].toUpperCase()+' RISK'):''; d.overall_score = ol?(ol+'/4'):''; d.overall_comment=p.overall.comment||'';
   // risk
   RISK.forEach(([k])=>{ const lv=p.risk[k]||0; d['risk_'+k+'_label']=lv?RLABEL[lv]:''; d['risk_'+k+'_score']=lv?String(lv):''; });
+  // per-pitch risk-box fill colours (sentinel hex -> level colour), applied post-render
+  const fills=[[RISK_SENTINEL.overall, RISK_LEVEL_COLOR[ol||0]]];
+  RISK.forEach(([k])=>{ const s=RISK_SENTINEL[k]; if(s) fills.push([s, RISK_LEVEL_COLOR[p.risk[k]||0]]); });
+  d.__riskFills=fills;
   // results
   RES_KEYS.forEach(k=>{ const t=TKEY[k]; const st=stats(p.tests[k].values);
     d['res_'+k+'_avg']=st.avg!=null?fmt(st.avg,t.unit):''; d['res_'+k+'_var']=st.varPct!=null?String(st.varPct):''; d['res_'+k+'_cmt']=p.tests[k].comment||''; });
@@ -1253,10 +1264,12 @@ function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key){
   ctx.beginPath(); ctx.moveTo(ox+w/2,oy+pad); ctx.lineTo(ox+w/2,oy+h-pad); ctx.stroke();
   ctx.setLineDash([5,5]); [0.22,0.78].forEach(fx=>{const x=ox+pad+(w-2*pad)*fx; ctx.beginPath(); ctx.moveTo(x,oy+pad); ctx.lineTo(x,oy+h-pad); ctx.stroke();}); ctx.setLineDash([]);
   const r=Math.max(9,w*0.028);
-  pos.forEach((pp,k)=>{ const x=ox+pad+pp[0]*(w-2*pad), y=oy+pad+pp[1]*(h-2*pad), done=vals[k]!=null;
-    const lbl=done?shortNum(vals[k]):String(k+1), L=lbl.length;
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=done?'#1f7a4d':'#fff'; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=done?'#155c39':'#c2cad2'; ctx.stroke();
-    ctx.fillStyle=done?'#fff':'#6b7785'; ctx.font='bold '+Math.round(r*(L<=2?1.05:(L===3?0.82:0.68)))+'px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl,x,y); });
+  pos.forEach((pp,k)=>{ const done=vals[k]!=null;
+    if(!done) return;                                   // report maps: show only tested positions (green dots)
+    const x=ox+pad+pp[0]*(w-2*pad), y=oy+pad+pp[1]*(h-2*pad);
+    const lbl=shortNum(vals[k]), L=lbl.length;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle='#1f7a4d'; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle='#155c39'; ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font='bold '+Math.round(r*(L<=2?1.05:(L===3?0.82:0.68)))+'px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl,x,y); });
 }
 /* composite image of all test maps for the report appendix; returns {dataUrl,w,h} */
 function buildTestMapsImage(p){
@@ -1357,9 +1370,17 @@ function renderReportZip(buf,data,sizeMap,withImages){
   const modules=[];
   if(withImages && window.ImageModule){
     let nextExt='png';
+    const WHITE_BYTES=new Uint8Array(b64ToArrayBuffer(WHITE_PX));
     const mod=new window.ImageModule({centered:true,
-      getImage:tag=>{ const u=new Uint8Array(b64ToArrayBuffer(tag)); nextExt=imgExtFromBytes(u); return u; },
-      getSize:(img,tag)=>sizeMap[tag]||[235,150]});
+      // Never throw from here: a single malformed/HEIC/blob image must not blank
+      // every image in the report. Bad tags fall back to a 1px white placeholder.
+      getImage:tag=>{ try{
+          if(typeof tag!=='string' || tag.indexOf('base64,')<0){ nextExt='png'; return WHITE_BYTES; }
+          const u=new Uint8Array(b64ToArrayBuffer(tag));
+          if(!u.length){ nextExt='png'; return WHITE_BYTES; }
+          nextExt=imgExtFromBytes(u); return u;
+        }catch(e){ console.warn('report image decode failed, using placeholder',e); nextExt='png'; return WHITE_BYTES; } },
+      getSize:(img,tag)=>{ const s=sizeMap[tag]; return (Array.isArray(s)&&s[0]>0&&s[1]>0)?s:[235,150]; }});
     // getImage() always runs immediately before getNextImageName() for the same image,
     // so nextExt is the format of the image about to be written — use it for the filename.
     mod.getNextImageName=function(){ const n='image_generated_'+this.imageNumber+'.'+nextExt; this.imageNumber++; return n; };
@@ -1367,7 +1388,17 @@ function renderReportZip(buf,data,sizeMap,withImages){
   }
   const doc=new window.docxtemplater(new window.PizZip(buf),{modules,paragraphLoop:true,linebreaks:true,delimiters:{start:'{',end:'}'},nullGetter:()=>''});
   doc.render(data);
-  return doc.getZip();
+  const zip=doc.getZip();
+  applyRiskFills(zip,data.__riskFills);
+  return zip;
+}
+/* Swap each risk-box sentinel fill for the colour of this pitch's actual level. */
+function applyRiskFills(zip,fills){
+  if(!fills||!fills.length) return;
+  try{ let xml=zip.file('word/document.xml').asText();
+    fills.forEach(([sent,color])=>{ xml=xml.split('w:fill="'+sent+'"').join('w:fill="'+color+'"'); });
+    zip.file('word/document.xml',xml);
+  }catch(e){ console.warn('risk-fill colouring failed',e); }
 }
 const DOCX_MIME='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 function dataUrlToUint8(dataUrl){ return new Uint8Array(b64ToArrayBuffer(dataUrl)); }
