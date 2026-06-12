@@ -9,8 +9,8 @@ const TESTS = [
   {key:'weed',       name:'Weed content',                 n:3,  unit:'%',    pri:false},
   {key:'turf_height',name:'Turf height',                  n:3,  unit:'mm',   pri:false},
   {key:'infil',      name:'Infiltration rate',            n:3,  unit:'mm/h', pri:false},
-  {key:'soil',       name:'Soil properties (thatch depth)',n:3,  unit:'mm',   pri:false, note:'Measure thatch depth (mm) at each position. Add a photo per observation below.', obsPhotos:true},
-  {key:'shear',      name:'Root zone shear strength',     n:12, unit:'Nm',   pri:false},
+  {key:'soil',       name:'Soil properties (root depth)', n:3,  unit:'mm',   pri:false, note:'Measure root depth (mm) at each position. Add a photo per observation below.', obsPhotos:true},
+  {key:'shear',      name:'Root zone shear strength',     n:1,  unit:'Nm',   pri:false},
   {key:'ndvi',       name:'Turf health (NDVI)',           n:25, unit:'',     pri:false},
   {key:'clegg',      name:'Clegg impact (compaction)',    n:25, unit:'g',    pri:true},
   {key:'traction',   name:'Surface traction / 19 mm stud',n:25, unit:'Nm',   pri:true},
@@ -1306,7 +1306,7 @@ async function buildSoilPhotosImage(p){
   let y=pad;
   for(const b of blocks){ const pos=b.pos;
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText('Position P'+(pos.i+1)+(pos.v!=null?'  ·  '+shortNum(pos.v)+' mm thatch':''), pad, y);
+    ctx.fillText('Position P'+(pos.i+1)+(pos.v!=null?'  ·  '+shortNum(pos.v)+' mm root depth':''), pad, y);
     for(let k=0;k<pos.photos.length;k++){ const col=k%cols, row=Math.floor(k/cols);
       const x=pad+col*(cellW+pad), cy=y+titleH+row*(cellH+10);
       ctx.fillStyle='#eef1f4'; ctx.fillRect(x,cy,cellW,cellH);
