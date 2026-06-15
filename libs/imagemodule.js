@@ -320,7 +320,7 @@ module.exports = function () {
 			}
 			var types = contentTypeDoc.getElementsByTagName("Types")[0];
 			var newTag = contentTypeDoc.createElement("Default");
-			newTag.namespaceURI = null;
+			/* patched: browser DOM Element.namespaceURI is read-only (setting it throws and aborts the whole image render → reports came out with no photos/maps); createElement already yields null, so this is a safe no-op */
 			newTag.setAttribute("ContentType", contentType);
 			newTag.setAttribute("Extension", extension);
 			types.appendChild(newTag);
@@ -350,7 +350,7 @@ module.exports = function () {
 			this.addExtensionRels("image/" + extension, extension);
 			var relationships = this.relsDoc.getElementsByTagName("Relationships")[0];
 			var newTag = this.relsDoc.createElement("Relationship");
-			newTag.namespaceURI = null;
+			/* patched: browser DOM Element.namespaceURI is read-only (setting it throws and aborts the whole image render → reports came out with no photos/maps); createElement already yields null, so this is a safe no-op */
 			var maxRid = this.loadImageRels() + 1;
 			newTag.setAttribute("Id", "rId" + maxRid);
 			newTag.setAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image");

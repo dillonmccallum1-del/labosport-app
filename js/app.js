@@ -1381,7 +1381,8 @@ const SEC3_MAPS=[
   ['traction','map_traction','cap_traction','Surface traction (19 mm stud) — measured with a studded-disc rotational traction tester'],
 ];
 
-function loadImage(src){ return new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>res(null); im.src=src; }); }
+function loadImage(src){ return new Promise(res=>{ if(!src||typeof src!=='string'){ res(null); return; }   // skip photos with no image data (avoids GET /undefined 404)
+  const im=new Image(); im.onload=()=>res(im); im.onerror=()=>res(null); im.src=src; }); }
 /* composite of the soil-test observation photos, grouped by position (for report Appendix K) */
 async function buildSoilPhotosImage(p){
   const td=p.tests&&p.tests.soil, ph=(td&&td.photos)||{};
@@ -1533,13 +1534,16 @@ async function generateWord(v,pitchesArr){
     // Surface the FULL error so we can diagnose why images fail (the image step silently
     // dropping to text-only is why reports come out with no photos/maps). Stash it for inspection
     // and show it untruncated; tap the toast to copy the full text.
-    const full=(e1&&e1.name||'Error')+': '+(e1&&e1.message||String(e1))+(e1&&e1.stack?(' | '+String(e1.stack).split('\n').slice(0,3).join(' ⏎ ')):'');
+    const full=(e1&&e1.name||'Error')+': '+(e1&&e1.message||String(e1))+(e1&&e1.stack?('\n\n'+String(e1.stack).split('\n').slice(0,4).join('\n')):'');
     window.__lastReportError=full;
     try{ dlBlob(name, make(false));
-      const t=$('toast'); if(t){ t.textContent='⚠ Photos/maps skipped — image step failed. Tap to copy details.'; t.classList.add('show');
-        t.onclick=()=>{ try{ navigator.clipboard.writeText(full); toast('Error details copied'); }catch(_){ alert(full); } };
-        clearTimeout(window.__rptErrT); window.__rptErrT=setTimeout(()=>{t.classList.remove('show');t.onclick=null;},8000); }
-      else alert(full);
+      // Show the full error in a modal alert (reliable on mobile, unlike the clipboard) so it can be
+      // read or screenshotted. Also try to copy as a convenience.
+      try{ if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(full).catch(()=>{}); }catch(_){}
+      const t=$('toast'); if(t){ t.textContent='⚠ Photos/maps skipped — image step failed. Tap for details.'; t.classList.add('show');
+        t.onclick=()=>{ alert(full); };
+        clearTimeout(window.__rptErrT); window.__rptErrT=setTimeout(()=>{t.classList.remove('show');t.onclick=null;},10000); }
+      setTimeout(()=>{ try{ alert('Report made WITHOUT photos/maps.\n\nImage step error:\n'+full); }catch(_){} }, 300);
     }
     catch(e2){ console.error(e2); toast('⚠ Report failed: '+(e2.name||'')+' '+(e2.message||e2)); }
   }
