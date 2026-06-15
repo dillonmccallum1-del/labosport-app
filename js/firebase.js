@@ -8,7 +8,7 @@
   'use strict';
   const CFG_KEY='labosport_fb';
   let cfg=load();                       // {config:{...}|null, enabled:bool}
-  let app=null, auth=null, db=null, user=null, unsub=null, started=false;
+  let app=null, auth=null, db=null, storage=null, user=null, unsub=null, started=false;
   let hooks={ getState:()=>({venues:[]}), onStatus:()=>{}, applyRemoteVenue:()=>{}, removeRemoteVenue:()=>{} };
   let lastSeen={};                      // venueId -> content hash (excludes photos/_ts)
   let pushTimer=null, wired=false;
@@ -21,9 +21,15 @@
   function activeConfig(){ return cfg.config || embedded(); }
   function fbReady(){ return typeof firebase!=='undefined' && firebase.firestore && firebase.auth; }
 
-  // venue doc to store in Firestore: drop photos (size) + brief images + transient _ts
-  function forFirestore(v){ const c=JSON.parse(JSON.stringify(v)); delete c.briefImages;
-    (c.pitches||[]).forEach(p=>{ p.photos=[]; if(p.tests) Object.keys(p.tests).forEach(k=>{ if(p.tests[k]) p.tests[k].photos={}; }); }); return c; }
+  // venue doc to store in Firestore: keep small photo refs {id,w,h} so teammates learn which photos
+  // exist (the bytes go to Storage), drop the heavy brief-image data (kept in Storage under brief/<id>),
+  // record the brief count so receivers know to fetch, and drop the transient _ts.
+  function forFirestore(v){ const c=JSON.parse(JSON.stringify(v));
+    c._briefN=Math.max((v.briefImages||[]).length, v._briefN||0); delete c.briefImages;
+    const strip=ph=>{ if(ph) delete ph.dataUrl; };               // keep {id,w,h}; image bytes live in Storage
+    (c.pitches||[]).forEach(p=>{ (p.photos||[]).forEach(strip);
+      if(p.tests) Object.keys(p.tests).forEach(k=>{ const ph=p.tests[k]&&p.tests[k].photos; if(ph) Object.keys(ph).forEach(pos=>(ph[pos]||[]).forEach(strip)); }); });
+    return c; }
   function contentHash(v){ const c=forFirestore(v); delete c._ts; delete c._by; return JSON.stringify(c); }
 
   function init(){
@@ -33,6 +39,7 @@
     try{
       app=firebase.initializeApp(conf);
       auth=firebase.auth(); db=firebase.firestore();
+      try{ if(firebase.storage) storage=firebase.storage(); }catch(e){}   // photo/brief blobs (optional; needs Storage enabled)
       db.enablePersistence({synchronizeTabs:true}).catch(()=>{});   // offline cache
       auth.onAuthStateChanged(u=>{
         user=u;
@@ -125,6 +132,20 @@
   // so after the first sign-in this silently restores it and resumes background sync.
   function autoStart(){ if(!activeConfig()) return; let n=0; (function wait(){ if(fbReady()){ init(); } else if(n++<60){ setTimeout(wait,150); } })(); }
 
+  /* ---------- photo / brief blobs in Cloud Storage ---------- */
+  // Mirrors the local IndexedDB media tier across devices. Each photo is stored by its stable id;
+  // brief-image arrays by venue id. Failures are surfaced to the caller, which treats them as
+  // "photo stays local" — no data is ever lost, the image just doesn't appear on the other device.
+  function blobToDataURL(b){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=()=>rej(fr.error); fr.readAsDataURL(b); }); }
+  function putMedia(id, dataUrl){ if(!storage||!id||!dataUrl) return Promise.reject(new Error('storage unavailable'));
+    return storage.ref('media/'+id).putString(dataUrl,'data_url').then(()=>true); }
+  function getMedia(id){ if(!storage||!id) return Promise.reject(new Error('storage unavailable'));
+    return storage.ref('media/'+id).getDownloadURL().then(u=>fetch(u)).then(r=>{ if(!r.ok) throw new Error('download '+r.status); return r.blob(); }).then(blobToDataURL); }
+  function putBrief(vid, arr){ if(!storage||!vid) return Promise.reject(new Error('storage unavailable'));
+    return storage.ref('brief/'+vid+'.json').putString(JSON.stringify(arr||[]),'raw',{contentType:'application/json'}).then(()=>true); }
+  function getBrief(vid){ if(!storage||!vid) return Promise.reject(new Error('storage unavailable'));
+    return storage.ref('brief/'+vid+'.json').getDownloadURL().then(u=>fetch(u)).then(r=>{ if(!r.ok) throw new Error('download '+r.status); return r.text(); }).then(t=>JSON.parse(t)); }
+
   window.FB={
     configure(h){ hooks=Object.assign(hooks,h); },
     setConfig(text){ const c=parseConfig(text); if(!c||!c.projectId){ status('⚠ That doesn’t look like a Firebase config','warn'); return false; } cfg.config=c; saveCfg(); return true; },
@@ -135,6 +156,8 @@
     isConfigured(){ return !!activeConfig(); },
     isSignedIn(){ return !!user; },
     userEmail(){ return user?(user.email||user.uid):''; },
+    storageReady(){ return !!storage; },
+    putMedia, getMedia, putBrief, getBrief,
     connect, connectEmail, disconnect, schedulePush, flush, autoStart, markSeen,
     deleteVenueDoc(id){ try{ delete lastSeen[id]; if(db&&id) db.collection('venues').doc(id).delete().catch(()=>{}); }catch(e){} },
     syncNow(){ pushChanges(); }

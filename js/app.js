@@ -257,6 +257,7 @@ function save(flash,opts){
     if(flash){const s=document.getElementById('savedFlag'); if(s){s.classList.add('show'); clearTimeout(saveTimer); saveTimer=setTimeout(()=>s.classList.remove('show'),900);} }
   }catch(e){ toast('⚠ Storage full — export a backup and remove some photos'); }
   if(mediaOK) persistMedia();
+  try{ cloudPersistMedia(); }catch(e){}                          // also push photo bytes to Storage (cross-device)
   if(!opts.noSync && window.GDrive && GDrive.isConnected()) GDrive.schedulePush();
   if(!opts.noFB && window.FB && FB.isEnabled()) FB.schedulePush();
 }
@@ -296,22 +297,95 @@ function hydrateMedia(){ const jobs=[];
   return Promise.all(jobs).then(()=>{ try{ render(); }catch(e){} });
 }
 function initMedia(){ mediaOpen().then(()=>{ mediaOK=true; try{ persistMedia(); }catch(e){} return hydrateMedia(); }).catch(()=>{ mediaOK=false; }); }
-/* ---- incoming team-sync changes from Firestore (merge, preserving local photos) ---- */
+/* ---- cloud media tier (Firebase Storage): same idea as IndexedDB, but shared across devices ---- */
+let cloudSaved=new Set(), cloudBriefN={};
+function cloudActive(){ return window.FB && FB.isSignedIn && FB.isSignedIn() && FB.storageReady && FB.storageReady(); }
+// upload any photo bytes / brief images not yet pushed to Storage (mirrors persistMedia)
+function cloudPersistMedia(){ if(!cloudActive()) return;
+  try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&ph.dataUrl&&!cloudSaved.has(ph.id)){ cloudSaved.add(ph.id);
+        FB.putMedia(ph.id, ph.dataUrl).catch(()=>cloudSaved.delete(ph.id)); } });
+    (state.venues||[]).forEach(v=>{ const arr=v.briefImages; if(arr&&arr.length&&cloudBriefN[v.id]!==arr.length){ cloudBriefN[v.id]=arr.length;
+        FB.putBrief(v.id, arr).catch(()=>{ delete cloudBriefN[v.id]; }); } }); }catch(e){}
+}
+// pull bytes for any photo ref / brief set that synced as a reference only (mirrors hydrateMedia)
+function cloudHydrate(){ if(!cloudActive()) return;
+  const reflow=()=>{ if(!ENTRY_ROUTES.test(cur())){ try{ render(); }catch(e){} } };   // don't yank focus mid data-entry
+  try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&!ph.dataUrl){ FB.getMedia(ph.id).then(d=>{ if(d){ ph.dataUrl=d; cloudSaved.add(ph.id);
+        if(mediaOK){ try{ mediaSet(ph.id,d); mediaSaved.add(ph.id); }catch(e){} } reflow(); } }).catch(()=>{}); } });
+    (state.venues||[]).forEach(v=>{ const have=(v.briefImages||[]).length, want=v._briefN||0;
+      if(want>have){ FB.getBrief(v.id).then(arr=>{ if(arr&&arr.length){ v.briefImages=arr; cloudBriefN[v.id]=arr.length;
+        if(mediaOK){ try{ mediaSet('brief:'+v.id,arr.slice()); mediaBrief[v.id]=arr.length; }catch(e){} } reflow(); } }).catch(()=>{}); } }); }catch(e){}
+}
+/* ---- incoming team-sync changes from Firestore ---- */
+// Field-level merge. The cloud holds one record per venue; previously an incoming copy either
+// replaced the whole local venue or was dropped entirely (last-write-wins by _ts). Both paths
+// LOST data: edits made on one device wiped edits made on the other for the same venue. We now
+// fold the two copies together — union pitches/photos by id and fill every blank from the other
+// side — so a value entered anywhere survives. _ts is used only to break true field conflicts
+// (the exact same field edited on both devices), where the newer copy wins.
+
+// union two photo arrays by id, keeping whichever copy actually carries the image bytes (dataUrl)
+function mergePhotoArr(a,b){ a=a||[]; b=b||[]; const out=[], seen={};
+  a.concat(b).forEach(ph=>{ if(!ph||!ph.id) return; const ex=seen[ph.id];
+    if(!ex){ seen[ph.id]=Object.assign({},ph); out.push(seen[ph.id]); }
+    else if(!ex.dataUrl && ph.dataUrl){ ex.dataUrl=ph.dataUrl; ex.w=ex.w||ph.w; ex.h=ex.h||ph.h; } });
+  return out; }
+// union per-observation test photo maps { position -> [ {id,..} ] }
+function mergeTestPhotos(a,b){ a=a||{}; b=b||{}; const out={};
+  new Set(Object.keys(a).concat(Object.keys(b))).forEach(pos=>{ out[pos]=mergePhotoArr(a[pos],b[pos]); }); return out; }
+// fold `other` pitch into `base` pitch, filling blanks only (base wins real conflicts)
+function mergePitchDeep(base, other){
+  if(other.name && !base.name) base.name=other.name;
+  if(other.tests){ base.tests=base.tests||{};
+    Object.keys(other.tests).forEach(k=>{ const ot=other.tests[k]; let bt=base.tests[k];
+      if(!bt){ base.tests[k]=ot; return; }
+      if(Array.isArray(ot.values)){ bt.values=bt.values||[]; ot.values.forEach((val,vi)=>{ if(val!=null && bt.values[vi]==null) bt.values[vi]=val; }); }
+      if((!bt.comment||!bt.comment.trim())&&ot.comment) bt.comment=ot.comment;
+      if((!bt.method||!bt.method.trim())&&ot.method) bt.method=ot.method;
+      bt.photos=mergeTestPhotos(bt.photos, ot.photos); }); }
+  if(other.audit){ base.audit=base.audit||{};
+    Object.keys(other.audit).forEach(s=>{ const oa=other.audit[s]; let ba=base.audit[s];
+      if(!ba){ base.audit[s]=oa; return; }
+      if(oa.fields){ ba.fields=ba.fields||{}; Object.keys(oa.fields).forEach(k=>{ const ov=oa.fields[k];
+        if(ov!=null&&String(ov).trim()!==''&&(ba.fields[k]==null||String(ba.fields[k]).trim()==='')) ba.fields[k]=ov; }); }
+      if((!ba.brief||!ba.brief.trim())&&oa.brief) ba.brief=oa.brief; }); }
+  if(other.risk){ base.risk=base.risk||{}; Object.keys(other.risk).forEach(k=>{ if(!base.risk[k]&&other.risk[k]) base.risk[k]=other.risk[k]; }); }
+  if(other.overall&&other.overall.level&&(!base.overall||!base.overall.level)) base.overall=other.overall;
+  if(other.overall&&other.overall.comment&&base.overall&&!(base.overall.comment&&base.overall.comment.trim())) base.overall.comment=other.overall.comment;
+  if(other.bench&&(other.bench.role||other.bench.note)&&(!base.bench||(!base.bench.role&&!base.bench.note))) base.bench=other.bench;
+  if(other.photos) base.photos=mergePhotoArr(base.photos, other.photos);
+  if(other.photoNotes&&!(base.photoNotes&&base.photoNotes.trim())) base.photoNotes=other.photoNotes; }
+// fold `other` venue into `base` venue, unioning pitches by id
+function mergeVenueDeep(base, other){
+  ['name','alias','address','contact','position','email','phone','grass','wr','venueComment','cluster'].forEach(k=>{ if((base[k]==null||!String(base[k]).trim())&&other[k]) base[k]=other[k]; });
+  if((!base.params||!Object.keys(base.params).length)&&other.params) base.params=other.params;
+  if(other.briefLoaded) base.briefLoaded=true;
+  if((!base.briefImages||!base.briefImages.length)&&other.briefImages&&other.briefImages.length) base.briefImages=other.briefImages;
+  base._briefN=Math.max(base._briefN||0, other._briefN||0, (base.briefImages||[]).length);   // so cloudHydrate knows to fetch brief images from Storage
+  base.pitches=base.pitches||[];
+  (other.pitches||[]).forEach(op=>{ const bp=base.pitches.find(x=>x.id===op.id); if(!bp) base.pitches.push(op); else mergePitchDeep(bp, op); }); }
+
 const ENTRY_ROUTES=/^(test:|audit:|overall|risk|venueform|photos)/;
 function applyRemoteVenue(remote){
   if(!remote||!remote.id) return;
   const i=state.venues.findIndex(x=>x.id===remote.id), local=i>=0?state.venues[i]:null;
-  if(local && (local._ts||0) >= (remote._ts||0)) return;       // ours is newer/equal
-  // preserve local photos & brief images (not carried in the team DB)
-  remote.briefImages = (local&&local.briefImages)?local.briefImages:(remote.briefImages||[]);
-  (remote.pitches||[]).forEach(rp=>{ const lp=local&&(local.pitches||[]).find(x=>x.id===rp.id); rp.photos=(lp&&lp.photos)?lp.photos:(rp.photos||[]);
-    // preserve local per-observation test photos too (not carried in the team DB)
-    if(rp.tests) Object.keys(rp.tests).forEach(k=>{ const lph=lp&&lp.tests&&lp.tests[k]&&lp.tests[k].photos; rp.tests[k].photos=lph||rp.tests[k].photos||{}; });
-    migratePitchTests(rp); });   // backfill any test keys missing from the synced copy, else reports get a blank test-positions map
-  if(i>=0) state.venues[i]=remote; else state.venues.push(remote);
-  if(window.FB) FB.markSeen(remote);
+  (remote.pitches||[]).forEach(migratePitchTests);              // backfill any test keys missing from the synced copy
+  if(!local){                                                   // brand-new venue → take it wholesale
+    state.venues.push(remote);
+    if(window.FB) FB.markSeen(remote);
+    save(false,{keepStamp:true,noSync:true,noFB:true});
+  } else {
+    const remoteNewer=(remote._ts||0) > (local._ts||0);
+    const base=remoteNewer?remote:local, other=remoteNewer?local:remote;
+    mergeVenueDeep(base, other);
+    base._ts=Math.max(remote._ts||0, local._ts||0);
+    state.venues[i]=base;
+    // Push the union back so every device converges on the merged record. pushChanges compares a
+    // content hash, so an idempotent merge (nothing new folded in) is a no-op and won't echo-loop.
+    save(false,{keepStamp:true,noSync:true});                   // noFB omitted → allow team-sync push
+  }
+  try{ cloudHydrate(); }catch(e){}                              // pull any photo blobs referenced but not held locally
   try{ dedupeVenues(); }catch(e){}                              // a re-seeded copy may arrive with a new id → collapse it
-  save(false,{keepStamp:true,noSync:true,noFB:true});
   if(!ENTRY_ROUTES.test(cur())) render();                       // don't yank focus while entering data
   else toast('Team update received for “'+remote.name+'”');
 }

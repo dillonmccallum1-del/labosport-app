@@ -137,10 +137,14 @@ It pulls your data down. From then on both devices stay in sync.
 
 Turn this on and every authorised tester shares the **same live venue data** — measurements, audit
 answers, risk ratings, notes, and test positions all sync in real time, with offline support. It runs
-alongside everything else (local storage, Drive). **Photos are not part of the live team sync** (they're
-large) — they stay on each device; share finished photos/reports via **Publish to Drive**.
+alongside everything else (local storage, Drive). **Photos sync too** — the photo bytes go through
+Firebase Storage, which needs a one-time setup (see **`STORAGE_SETUP.md`**); until that's done photos
+stay on the device that took them and nothing is lost.
 
-Per-venue conflicts use last-edit-wins, and each venue records who last changed it.
+Venues merge **field-by-field**: a measurement, audit answer, or photo entered on either device is
+kept, and the two copies are folded together so edits on one device never wipe edits on the other.
+Only a true conflict — the exact same field changed on both devices — falls back to last-edit-wins,
+and each venue records who last changed it.
 
 ### One-time setup (owner)
 
