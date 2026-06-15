@@ -1475,7 +1475,16 @@ function renderReportZip(buf,data,sizeMap,withImages){
 function applyRiskFills(zip,fills){
   if(!fills||!fills.length) return;
   try{ let xml=zip.file('word/document.xml').asText();
-    fills.forEach(([sent,color])=>{ xml=xml.split('w:fill="'+sent+'"').join('w:fill="'+color+'"'); });
+    // Strip any theme-fill attributes globally: when a cell has w:themeFill, Microsoft Word shows
+    // the THEME colour and ignores the literal w:fill we swap below — so the risk colours looked
+    // right everywhere except Word. Removing them forces Word to use the literal fill.
+    xml=xml.replace(/\s+w:themeFill(?:Tint|Shade)?="[^"]*"/g,'');
+    fills.forEach(([sent,color])=>{
+      // replace the whole shd element for this sentinel (drops any leftover theme attrs), then a
+      // plain value swap as a fallback in case the shd is structured differently.
+      xml=xml.replace(new RegExp('<w:shd[^>]*w:fill="'+sent+'"[^>]*/>','g'),'<w:shd w:val="clear" w:color="auto" w:fill="'+color+'"/>');
+      xml=xml.split('w:fill="'+sent+'"').join('w:fill="'+color+'"');
+    });
     zip.file('word/document.xml',xml);
   }catch(e){ console.warn('risk-fill colouring failed',e); }
 }
