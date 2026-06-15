@@ -1528,9 +1528,13 @@ async function generateWord(v,pitchesArr){
 
 /* print-to-PDF report (HTML facsimile of the template; the .docx is the exact one) */
 function rrow(cells){ return '<tr>'+cells.map(c=>`<td>${c}</td>`).join('')+'</tr>'; }
+// risk-level cell colour, matching the Word report + in-app chips (1 green → 4 red). Inline so it
+// survives both the browser's print-to-PDF and any other renderer.
+function riskCellStyle(lv){ const c=RISK_LEVEL_COLOR[lv]||'D9D9D9'; return `background:#${c};color:${lv?'#fff':'#28282A'};font-weight:700;text-align:center`; }
 function reportSheet(v,p){
   const E=esc; const ol=p.overall.level;
-  const riskRows=RISK.map(([k,label])=>{const lv=p.risk[k]||0;return rrow([E(label),lv?RLABEL[lv]:'—',lv?lv:'—']);}).join('');
+  const riskRows=RISK.map(([k,label])=>{const lv=p.risk[k]||0;
+    return `<tr><td>${E(label)}</td><td>${lv?RLABEL[lv]:'—'}</td><td style="${riskCellStyle(lv)}">${lv?lv:'—'}</td></tr>`;}).join('');
   const resRows=RES_KEYS.map(k=>{const t=TKEY[k],st=stats(p.tests[k].values);
     return rrow([E(t.name),st.avg!=null?E(fmt(st.avg,t.unit)):'—',st.varPct!=null?st.varPct:'—',E(p.tests[k].comment||'')]);}).join('');
   const appendix=AUDIT.map(s=>{const f=p.audit[s[0]].fields;const rows=s[4].map(([label])=>{const val=f[label];return rrow([E(label),val?E(val):'—']);}).join('');
@@ -1555,6 +1559,7 @@ function reportSheet(v,p){
     <p><span class="rate">${ol?E(RLABEL[ol].toUpperCase()+' RISK · '+ol+'/4'):'NOT RATED'}</span></p>
     <p>${E(p.overall.comment)||'<span class="muted">No overall comment recorded.</span>'}</p>
     <h2>2 · Detailed risk assessment by parameter</h2>
+    <table><tr><td style="${riskCellStyle(1)}">Low · 1</td><td style="${riskCellStyle(2)}">Moderate · 2</td><td style="${riskCellStyle(3)}">High · 3</td><td style="${riskCellStyle(4)}">Critical · 4</td></tr></table>
     <table><tr><th>Parameter</th><th>Level of risk</th><th>Score</th></tr>${riskRows}</table>
     <h2>3 · Results for pitch</h2>
     <table><tr><th>Parameter</th><th>Average</th><th>Max variance (%)</th><th>Comments</th></tr>${resRows}</table>
@@ -1567,7 +1572,7 @@ function reportHTML(v,pitches){
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(v.name)} report</title>
   <style>
     @page{size:A4;margin:14mm}
-    *{box-sizing:border-box} body{font-family:Arial,Helvetica,sans-serif;color:#28282A;font-size:11px;margin:0}
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact} body{font-family:Arial,Helvetica,sans-serif;color:#28282A;font-size:11px;margin:0}
     .hd{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #E92840;padding-bottom:8px;margin-bottom:10px}
     .hd .ttl{font-size:18px;font-weight:800;letter-spacing:1px}
     .lb{color:#E92840} .muted{color:#838384}
