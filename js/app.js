@@ -1530,7 +1530,17 @@ async function generateWord(v,pitchesArr){
   }
   try{ dlBlob(name, make(true)); toast('Word report downloaded ✓'); }
   catch(e1){ console.error('image render failed:',e1);
-    try{ dlBlob(name, make(false)); toast('Report made WITHOUT photos/maps — image step failed: '+(e1.name||'')+' '+String(e1.message||'').slice(0,50)); }
+    // Surface the FULL error so we can diagnose why images fail (the image step silently
+    // dropping to text-only is why reports come out with no photos/maps). Stash it for inspection
+    // and show it untruncated; tap the toast to copy the full text.
+    const full=(e1&&e1.name||'Error')+': '+(e1&&e1.message||String(e1))+(e1&&e1.stack?(' | '+String(e1.stack).split('\n').slice(0,3).join(' ⏎ ')):'');
+    window.__lastReportError=full;
+    try{ dlBlob(name, make(false));
+      const t=$('toast'); if(t){ t.textContent='⚠ Photos/maps skipped — image step failed. Tap to copy details.'; t.classList.add('show');
+        t.onclick=()=>{ try{ navigator.clipboard.writeText(full); toast('Error details copied'); }catch(_){ alert(full); } };
+        clearTimeout(window.__rptErrT); window.__rptErrT=setTimeout(()=>{t.classList.remove('show');t.onclick=null;},8000); }
+      else alert(full);
+    }
     catch(e2){ console.error(e2); toast('⚠ Report failed: '+(e2.name||'')+' '+(e2.message||e2)); }
   }
 }
