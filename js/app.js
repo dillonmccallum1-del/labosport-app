@@ -1349,11 +1349,15 @@ function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key){
 }
 /* composite image of all test maps for the report appendix; returns {dataUrl,w,h} */
 function buildTestMapsImage(p){
-  const cols=2, cellW=600, mapH=234, titleH=34, gap=18, rows=Math.ceil(TESTS.length/cols);
+  // Only publish maps for metrics that actually have a reading. If nothing was
+  // measured anywhere, return null so the whole appendix is omitted.
+  const shown=TESTS.filter(t=>stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]).done>0);
+  if(!shown.length) return null;
+  const cols=2, cellW=600, mapH=234, titleH=34, gap=18, rows=Math.ceil(shown.length/cols);
   const W=cols*cellW+gap*(cols+1), H=rows*(mapH+titleH+gap)+gap;
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
-  TESTS.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
+  shown.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
     const st=stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]);
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
     ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
@@ -1416,8 +1420,10 @@ async function buildPitchReportData(v,p){
     if(ph){ data[key]=ph.dataUrl; sizeMap[ph.dataUrl]=fitBox(ph.w||240,ph.h||160,250,185); }
     else { data[key]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
   data.photo_notes=p.photoNotes||'';
-  try{ const tm=buildTestMapsImage(p); data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
-  catch(e){ console.error('test-maps image failed:',e); data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+  try{ const tm=buildTestMapsImage(p);
+    if(tm){ data.has_test_maps=true; data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
+    else { data.has_test_maps=false; data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
+  catch(e){ console.error('test-maps image failed:',e); data.has_test_maps=false; data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
   // Section 3 — individual location maps for shear, compaction (clegg) and traction, each with a device caption.
   SEC3_MAPS.forEach(([key,imgTag,capTag,caption])=>{
     try{ const m=buildSingleTestMapImage(p,key); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h,440,430); }
