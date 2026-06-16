@@ -1,5 +1,5 @@
 // Service worker — offline caching for the Labosport Pitch Inspector.
-const CACHE = 'labosport-v63';
+const CACHE = 'labosport-v64';
 const SHELL = [
   './',
   './index.html',

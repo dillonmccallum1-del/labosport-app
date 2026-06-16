@@ -323,8 +323,13 @@ function reportPhotoSync(kind,e){
 }
 // upload any photo bytes / brief images not yet pushed to Storage (mirrors persistMedia)
 function cloudPersistMedia(){ if(!cloudActive()) return;
-  try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&ph.dataUrl&&!cloudSaved.has(ph.id)){ cloudSaved.add(ph.id);
-        FB.putMedia(ph.id, ph.dataUrl).catch(e=>{ cloudSaved.delete(ph.id); reportPhotoSync('up',e); }); } });
+  const push=(id,url)=>{ if(!url||cloudSaved.has(id)) return; cloudSaved.add(id);
+    FB.putMedia(id,url).catch(e=>{ cloudSaved.delete(id); reportPhotoSync('up',e); }); };
+  try{ eachPhoto(state, ph=>{ if(!ph||!ph.id||cloudSaved.has(ph.id)) return;
+        if(ph.dataUrl) push(ph.id, ph.dataUrl);
+        // photo bytes live "lite" in IndexedDB after a reload; pull them so we can still upload
+        // even when the in-memory copy hasn't been hydrated yet (else nothing ever reaches Storage).
+        else if(mediaOK) mediaGet(ph.id).then(d=>{ if(d){ ph.dataUrl=d; push(ph.id,d); } }).catch(()=>{}); });
     (state.venues||[]).forEach(v=>{ const arr=v.briefImages; if(arr&&arr.length&&cloudBriefN[v.id]!==arr.length){ cloudBriefN[v.id]=arr.length;
         FB.putBrief(v.id, arr).catch(e=>{ delete cloudBriefN[v.id]; reportPhotoSync('up',e); }); } }); }catch(e){}
 }
@@ -847,7 +852,7 @@ function scrSettings(){
     : `<div class="card"><div class="field"><label>Firebase web config (paste from Firebase console)</label>
         <textarea id="fbConfig" placeholder='{ "apiKey": "…", "authDomain": "…", "projectId": "…", … }' autocapitalize="off" spellcheck="false" style="min-height:96px;font-size:12px">${window.FB?esc(FB.getConfigText()):''}</textarea></div></div>`;
   const signinBox = fbOn
-    ? `<div class="hint">Signed in as <b>${esc(FB.userEmail())}</b></div><button class="btn ghost" id="fbSignout">Sign out of team sync</button>`
+    ? `<div class="hint">Signed in as <b>${esc(FB.userEmail())}</b></div><button class="btn primary" id="fbPushPhotos">⬆ Upload photos to cloud now</button><button class="btn ghost" id="fbSignout">Sign out of team sync</button>`
     : `<button class="btn primary" id="fbConnect">Sign in with Google</button>
        <div class="hint" style="text-align:center;margin:4px 0">— or use any email —</div>
        <div class="card">
@@ -1091,6 +1096,15 @@ function bind(){
   if($('fbConnect'))$('fbConnect').onclick=()=>{ if(window.FB){ if($('fbConfig')) FB.setConfig($('fbConfig').value); FB.connect(); } };
   if($('fbEmailConnect'))$('fbEmailConnect').onclick=()=>{ if(window.FB){ if($('fbConfig')) FB.setConfig($('fbConfig').value); FB.connectEmail($('fbEmail')?$('fbEmail').value:'', $('fbPass')?$('fbPass').value:''); } };
   if($('fbSignout'))$('fbSignout').onclick=()=>{ if(window.FB){ FB.disconnect(); render(); } };
+  if($('fbPushPhotos'))$('fbPushPhotos').onclick=()=>{
+    if(!window.FB||!FB.isSignedIn()){ toast('Sign in to team sync first'); return; }
+    if(!FB.storageReady||!FB.storageReady()){ toast('⚠ Cloud Storage unavailable on this device'); return; }
+    let n=0; try{ eachPhoto(state, ph=>{ if(ph&&ph.id) n++; }); }catch(e){}
+    cloudSaved.clear();                                  // force a re-attempt of every photo
+    toast('<span class="spin"></span> Uploading '+n+' photo'+(n!==1?'s':'')+' to cloud…');
+    try{ cloudPersistMedia(); }catch(e){}
+    setTimeout(()=>{ if(!photoSyncErr.up) toast('Upload sent for '+n+' photo'+(n!==1?'s':'')+' — they should appear in Firebase Storage shortly'); }, 2500);
+  };
   if($('driveConn'))$('driveConn').onclick=()=>{ GDrive.setClientId($('cidInput').value); GDrive.connect().then(()=>render()); };
   if($('driveDisc'))$('driveDisc').onclick=()=>{ GDrive.disconnect(); render(); };
   if($('syncNow'))$('syncNow').onclick=()=>{ GDrive.syncNow().then(()=>render()).catch(()=>{}); };
@@ -1752,7 +1766,11 @@ function init(){
       getState:()=>state,
       applyRemoteVenue:applyRemoteVenue,
       removeRemoteVenue:removeRemoteVenue,
-      onStatus:(m,kind)=>{ if(kind!=='muted') toast(m); const e=$('fbStatus'); if(e&&cur()==='settings') e.innerHTML=m; }
+      onStatus:(m,kind)=>{ if(kind!=='muted') toast(m); const e=$('fbStatus'); if(e&&cur()==='settings') e.innerHTML=m;
+        // On sign-in / session-restore, push any local photo bytes UP to Storage and pull any we're
+        // missing DOWN. Without this, existing photos only uploaded on a fresh edit (save()), so a
+        // device that took photos before Storage was configured never back-filled them to the cloud.
+        if(kind==='ok'){ try{ cloudPersistMedia(); }catch(_){} try{ cloudHydrate(); }catch(_){} } }
     });
     FB.autoStart();
   }
