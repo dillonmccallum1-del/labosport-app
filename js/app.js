@@ -300,21 +300,42 @@ function initMedia(){ mediaOpen().then(()=>{ mediaOK=true; try{ persistMedia(); 
 /* ---- cloud media tier (Firebase Storage): same idea as IndexedDB, but shared across devices ---- */
 let cloudSaved=new Set(), cloudBriefN={};
 function cloudActive(){ return window.FB && FB.isSignedIn && FB.isSignedIn() && FB.storageReady && FB.storageReady(); }
+// Photo-sync failures used to be swallowed silently, so a misconfigured Firebase Storage bucket
+// (rules not published, or CORS not allowing this app's origin) just produced empty photo slots on
+// the other device with no clue why. Collect failures and surface ONE actionable, debounced toast.
+let photoSyncErr={up:0,down:0,lastMsg:'',shownAt:0}, photoSyncTimer=null;
+function fbErrMsg(e){ const c=e&&(e.code||e.name), m=e&&e.message;
+  if(c&&/unauthorized|permission|denied/i.test(c)) return 'permission denied — publish the Storage security rules (Step 2)';
+  if((m&&/failed to fetch|networkerror|cors/i.test(m)) || (e&&e.name==='TypeError')) return 'download blocked — set Storage CORS for this app’s web address (Step 3)';
+  if(c&&/object-not-found|not.?found|404/i.test(c)) return 'not found in Storage — the other device may not have uploaded it yet';
+  return (c||m||'unknown error'); }
+function reportPhotoSync(kind,e){
+  if(kind==='down') photoSyncErr.down++; else photoSyncErr.up++;
+  photoSyncErr.lastMsg=fbErrMsg(e); window.__photoSyncErr=Object.assign({},photoSyncErr,{raw:(e&&(e.code||e.message))||String(e)});
+  clearTimeout(photoSyncTimer);
+  photoSyncTimer=setTimeout(()=>{
+    const d=photoSyncErr.down,u=photoSyncErr.up;
+    let m = d ? ('⚠ '+d+' photo'+(d>1?'s':'')+' couldn’t download from the cloud')
+              : ('⚠ '+u+' photo'+(u>1?'s':'')+' couldn’t upload to the cloud');
+    toast(m+' — '+photoSyncErr.lastMsg+'.');
+    photoSyncErr.down=0; photoSyncErr.up=0;
+  }, 1500);
+}
 // upload any photo bytes / brief images not yet pushed to Storage (mirrors persistMedia)
 function cloudPersistMedia(){ if(!cloudActive()) return;
   try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&ph.dataUrl&&!cloudSaved.has(ph.id)){ cloudSaved.add(ph.id);
-        FB.putMedia(ph.id, ph.dataUrl).catch(()=>cloudSaved.delete(ph.id)); } });
+        FB.putMedia(ph.id, ph.dataUrl).catch(e=>{ cloudSaved.delete(ph.id); reportPhotoSync('up',e); }); } });
     (state.venues||[]).forEach(v=>{ const arr=v.briefImages; if(arr&&arr.length&&cloudBriefN[v.id]!==arr.length){ cloudBriefN[v.id]=arr.length;
-        FB.putBrief(v.id, arr).catch(()=>{ delete cloudBriefN[v.id]; }); } }); }catch(e){}
+        FB.putBrief(v.id, arr).catch(e=>{ delete cloudBriefN[v.id]; reportPhotoSync('up',e); }); } }); }catch(e){}
 }
 // pull bytes for any photo ref / brief set that synced as a reference only (mirrors hydrateMedia)
 function cloudHydrate(){ if(!cloudActive()) return;
   const reflow=()=>{ if(!ENTRY_ROUTES.test(cur())){ try{ render(); }catch(e){} } };   // don't yank focus mid data-entry
   try{ eachPhoto(state, ph=>{ if(ph&&ph.id&&!ph.dataUrl){ FB.getMedia(ph.id).then(d=>{ if(d){ ph.dataUrl=d; cloudSaved.add(ph.id);
-        if(mediaOK){ try{ mediaSet(ph.id,d); mediaSaved.add(ph.id); }catch(e){} } reflow(); } }).catch(()=>{}); } });
+        if(mediaOK){ try{ mediaSet(ph.id,d); mediaSaved.add(ph.id); }catch(e){} } reflow(); } }).catch(e=>reportPhotoSync('down',e)); } });
     (state.venues||[]).forEach(v=>{ const have=(v.briefImages||[]).length, want=v._briefN||0;
       if(want>have){ FB.getBrief(v.id).then(arr=>{ if(arr&&arr.length){ v.briefImages=arr; cloudBriefN[v.id]=arr.length;
-        if(mediaOK){ try{ mediaSet('brief:'+v.id,arr.slice()); mediaBrief[v.id]=arr.length; }catch(e){} } reflow(); } }).catch(()=>{}); } }); }catch(e){}
+        if(mediaOK){ try{ mediaSet('brief:'+v.id,arr.slice()); mediaBrief[v.id]=arr.length; }catch(e){} } reflow(); } }).catch(e=>reportPhotoSync('down',e)); } }); }catch(e){}
 }
 /* Ensure every photo in these pitches has its image bytes (dataUrl) in memory BEFORE building a
    report. Photos persist "lite" (dataUrl stripped) and hydrate asynchronously, so a report made
@@ -332,7 +353,7 @@ async function ensureReportMedia(pitches){
   if(mediaOK){ await Promise.all(missing.map(ph=>mediaGet(ph.id).then(d=>{ if(d){ ph.dataUrl=d; mediaSaved.add(ph.id); } }).catch(()=>{}))); }
   const still=missing.filter(ph=>!ph.dataUrl);
   if(still.length && cloudActive()){ await Promise.all(still.map(ph=>FB.getMedia(ph.id).then(d=>{ if(d){ ph.dataUrl=d; cloudSaved.add(ph.id);
-        if(mediaOK){ try{ mediaSet(ph.id,d); mediaSaved.add(ph.id); }catch(e){} } } }).catch(()=>{}))); }
+        if(mediaOK){ try{ mediaSet(ph.id,d); mediaSaved.add(ph.id); }catch(e){} } } }).catch(e=>reportPhotoSync('down',e)))); }
   return missing.filter(ph=>!ph.dataUrl).length;
 }
 /* ---- incoming team-sync changes from Firestore ---- */
