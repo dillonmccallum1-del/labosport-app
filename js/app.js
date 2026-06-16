@@ -316,6 +316,25 @@ function cloudHydrate(){ if(!cloudActive()) return;
       if(want>have){ FB.getBrief(v.id).then(arr=>{ if(arr&&arr.length){ v.briefImages=arr; cloudBriefN[v.id]=arr.length;
         if(mediaOK){ try{ mediaSet('brief:'+v.id,arr.slice()); mediaBrief[v.id]=arr.length; }catch(e){} } reflow(); } }).catch(()=>{}); } }); }catch(e){}
 }
+/* Ensure every photo in these pitches has its image bytes (dataUrl) in memory BEFORE building a
+   report. Photos persist "lite" (dataUrl stripped) and hydrate asynchronously, so a report made
+   before hydrateMedia/cloudHydrate finish — or on a device where the photo only lives in the
+   cloud — would otherwise embed blank-white placeholders. Pulls from IndexedDB first, then
+   Firebase Storage for anything still missing. Returns the count of photos that remain missing. */
+async function ensureReportMedia(pitches){
+  const missing=[];
+  (pitches||[]).forEach(p=>{
+    (p&&p.photos||[]).forEach(ph=>{ if(ph&&ph.id&&!ph.dataUrl) missing.push(ph); });
+    if(p&&p.tests) Object.keys(p.tests).forEach(k=>{ const ph=p.tests[k]&&p.tests[k].photos;
+      if(ph) Object.keys(ph).forEach(pos=>(ph[pos]||[]).forEach(x=>{ if(x&&x.id&&!x.dataUrl) missing.push(x); })); });
+  });
+  if(!missing.length) return 0;
+  if(mediaOK){ await Promise.all(missing.map(ph=>mediaGet(ph.id).then(d=>{ if(d){ ph.dataUrl=d; mediaSaved.add(ph.id); } }).catch(()=>{}))); }
+  const still=missing.filter(ph=>!ph.dataUrl);
+  if(still.length && cloudActive()){ await Promise.all(still.map(ph=>FB.getMedia(ph.id).then(d=>{ if(d){ ph.dataUrl=d; cloudSaved.add(ph.id);
+        if(mediaOK){ try{ mediaSet(ph.id,d); mediaSaved.add(ph.id); }catch(e){} } } }).catch(()=>{}))); }
+  return missing.filter(ph=>!ph.dataUrl).length;
+}
 /* ---- incoming team-sync changes from Firestore ---- */
 // Field-level merge. The cloud holds one record per venue; previously an incoming copy either
 // replaced the whole local venue or was dropped entirely (last-write-wins by _ts). Both paths
@@ -1501,6 +1520,7 @@ async function buildVenueWordBlob(v, pitchesArr){
   const pitches=pitchesArr&&pitchesArr.length?pitchesArr:v.pitches;
   const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')');
   const buf=await res.arrayBuffer();
+  await ensureReportMedia(pitches);                 // load photo bytes (IndexedDB → cloud) before building, else photos embed blank
   const built=await Promise.all(pitches.map(p=>buildPitchReportData(v,p)));
   function make(withImages){ const zips=built.map(d=>renderReportZip(buf,d.data,d.sizeMap,withImages));
     const merged=(zips.length>1 && window.mergeDocxZips)?window.mergeDocxZips(zips):zips[0];
@@ -1528,6 +1548,8 @@ async function generateWord(v,pitchesArr){
   let buf;
   try{ const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')'); buf=await res.arrayBuffer(); }
   catch(e){ console.error(e); toast('⚠ Report failed: '+(e.message||e)); return; }
+  const missing=await ensureReportMedia(pitches);   // load photo bytes (IndexedDB → cloud) before building, else photos embed blank
+  if(missing>0) toast('<span class="spin"></span> '+missing+' photo'+(missing>1?'s':'')+' not downloaded yet — building anyway…');
   const built=await Promise.all(pitches.map(p=>buildPitchReportData(v,p)));
   const name = pitches.length>1 ? ('Labosport_'+sanitize(v.name)+'_all-pitches_'+today()+'.docx') : reportName(v,pitches[0],'docx');
   function make(withImages){
