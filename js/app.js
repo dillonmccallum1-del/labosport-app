@@ -616,7 +616,14 @@ function mergeVenueDeep(base, other){
   if((!base.briefImages||!base.briefImages.length)&&other.briefImages&&other.briefImages.length) base.briefImages=other.briefImages;
   base._briefN=Math.max(base._briefN||0, other._briefN||0, (base.briefImages||[]).length);   // so cloudHydrate knows to fetch brief images from Storage
   base.pitches=base.pitches||[];
-  (other.pitches||[]).forEach(op=>{ const bp=base.pitches.find(x=>x.id===op.id); if(!bp) base.pitches.push(op); else mergePitchDeep(bp, op); }); }
+  // Pitch deletions: union the per-venue tombstone map {pitchId -> deletedAt}. Pitch ids are unique
+  // (a re-added pitch gets a fresh id), so a tombstoned id is gone for good. Without this the union
+  // below would resurrect a deleted pitch from any sync echo or teammate copy that still carried it.
+  const tomb=Object.assign({}, base.deletedPitches||{});
+  Object.keys(other.deletedPitches||{}).forEach(id=>{ tomb[id]=Math.max(tomb[id]||0, other.deletedPitches[id]||0); });
+  (other.pitches||[]).forEach(op=>{ if(tomb[op.id]) return;   // skip a pitch the venue has deleted
+    const bp=base.pitches.find(x=>x.id===op.id); if(!bp) base.pitches.push(op); else mergePitchDeep(bp, op); });
+  if(Object.keys(tomb).length){ base.deletedPitches=tomb; base.pitches=base.pitches.filter(p=>!tomb[p.id]); } }   // drop any locally-held pitch a teammate deleted
 
 const ENTRY_ROUTES=/^(test:|audit:|overall|risk|venueform|photos)/;
 function applyRemoteVenue(remote){
@@ -745,6 +752,10 @@ function cur(){return stack[stack.length-1];}
 
 function render(){
   const r=cur(); const app=$('app');
+  // Replacing #app's innerHTML collapses the scroll container's height, which makes the browser
+  // clamp scrollTop to 0. So capture the position first and restore it for an in-place re-render
+  // (same route — e.g. adding/switching/deleting a pitch, autosave); only real navigation goes to top.
+  const scroller=app.parentElement; const prevScroll=scroller?scroller.scrollTop:0; const sameRoute=(r===_lastRoute);
   let title='Labosport Pitch Inspector', sub='';
   const onHome=(r==='home');
   if(r==='home'){ app.innerHTML=scrHome(); }
@@ -767,7 +778,7 @@ function render(){
   $('backBtn').style.display = stack.length>1?'flex':'none';
   $('tabbar').style.display = TOP.includes(r)?'flex':'none';
   document.querySelectorAll('.tabbar button').forEach(b=>b.classList.toggle('on',b.dataset.tab===(TOP.includes(r)?r:null)));
-  if(r!==_lastRoute) $('app').parentElement.scrollTop=0;   // only jump to top when the screen actually changes (adding a pitch re-renders 'venue' in place)
+  if(scroller) scroller.scrollTop = sameRoute ? prevScroll : 0;   // preserve scroll on in-place re-renders, jump to top on navigation
   _lastRoute=r;
   bind();
 }
@@ -1402,13 +1413,14 @@ function addVwcDepth(){ const p=pitch(); const keys=vwcKeys(p); const next=VWC_P
 async function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=await uiPrompt('Rename pitch',p.name); if(name==null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
 function editVenue(){ go('venueform',true); }
+function tombstonePitch(v,p){ if(!v||!p||!p.id) return; v.deletedPitches=v.deletedPitches||{}; v.deletedPitches[p.id]=Date.now(); }   // mark so sync/merge won't resurrect it
 function deletePitchAt(i){ const v=venue(); if(!v) return; const p=v.pitches[i]; if(!p) return;
   if(v.pitches.length<=1){ deletePitchOrVenue(); return; }   // last pitch → fall back to venue delete
-  if(confirm('Delete pitch “'+p.name+'” and its data?')){ v.pitches.splice(i,1);
+  if(confirm('Delete pitch “'+p.name+'” and its data?')){ tombstonePitch(v,p); v.pitches.splice(i,1);
     if(CURP>=v.pitches.length) CURP=v.pitches.length-1; if(CURP<0) CURP=0;
     save(); render(); toast('Pitch deleted'); } }
 function deletePitchOrVenue(){ const v=venue();
-  if(v.pitches.length>1){ if(confirm('Delete pitch “'+v.pitches[CURP].name+'” and its data?')){v.pitches.splice(CURP,1);CURP=0;save();render();toast('Pitch deleted');} }
+  if(v.pitches.length>1){ if(confirm('Delete pitch “'+v.pitches[CURP].name+'” and its data?')){tombstonePitch(v,v.pitches[CURP]);v.pitches.splice(CURP,1);CURP=0;save();render();toast('Pitch deleted');} }
   else { if(confirm('Delete venue “'+v.name+'” and all its data? This cannot be undone.')){state.venues=state.venues.filter(x=>x.id!==v.id);save();go('home');toast('Venue deleted');} } }
 
 /* brief upload -> parse -> autofill */
