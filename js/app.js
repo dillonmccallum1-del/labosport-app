@@ -1719,7 +1719,35 @@ function buildSingleTestMapImage(p,key,v){
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 
-/* ---- FIFA-quality heat maps (IDW surface, no dots) ---- */
+/* ---- FIFA-quality heat maps (bicubic surface, no dots) ---- */
+// Catmull-Rom cubic: smooth curve that passes exactly through p1 and p2 (p0,p3 set the slopes),
+// so a standalone reading stays a visible local peak/dip instead of being washed out.
+function cmRom(p0,p1,p2,p3,t){ const t2=t*t, t3=t2*t;
+  return 0.5*((2*p1)+(-p0+p2)*t+(2*p0-5*p1+4*p2-p3)*t2+(-p0+3*p1-3*p2+p3)*t3); }
+// Build a 5×5 grid of quality scores from the 25 readings (snake-numbered positions),
+// filling any un-measured nodes by relaxation so the bicubic surface stays continuous.
+function heatGrid5(key,vals,grass,hybrid){
+  const G=Array.from({length:5},()=>Array(5).fill(null)); let any=false;
+  for(let k=0;k<25;k++){ const val=vals[k]; if(val==null||isNaN(val)) continue;
+    const q=fifaScore(key,val,grass,hybrid); if(q==null) continue;
+    const row=Math.floor(k/5), pir=k%5, col=(row%2===0)?pir:4-pir; G[row][col]=q; any=true; }
+  if(!any) return null;
+  const known=G.map(r=>r.map(v=>v!=null));
+  let sum=0,n=0; for(let r=0;r<5;r++)for(let c=0;c<5;c++) if(known[r][c]){sum+=G[r][c];n++;}
+  const mean=sum/n;
+  for(let r=0;r<5;r++)for(let c=0;c<5;c++) if(!known[r][c]) G[r][c]=mean;     // seed gaps
+  for(let it=0;it<60;it++){ for(let r=0;r<5;r++)for(let c=0;c<5;c++){ if(known[r][c]) continue;
+    let s=0,m=0; if(r>0){s+=G[r-1][c];m++;} if(r<4){s+=G[r+1][c];m++;} if(c>0){s+=G[r][c-1];m++;} if(c<4){s+=G[r][c+1];m++;}
+    G[r][c]=s/m; } }                                                          // relax gaps toward neighbours
+  return G;
+}
+// Sample the 5×5 grid at continuous grid coords (0..4) with bicubic (Catmull-Rom), clamping at edges.
+function bicubicSample(G,gx,gy){
+  const cl=i=>i<0?0:i>4?4:i, ix=Math.floor(gx), fx=gx-ix, iy=Math.floor(gy), fy=gy-iy, col=[];
+  for(let m=-1;m<=2;m++){ const r=cl(iy+m);
+    col.push(cmRom(G[r][cl(ix-1)],G[r][cl(ix)],G[r][cl(ix+1)],G[r][cl(ix+2)],fx)); }
+  return cmRom(col[0],col[1],col[2],col[3],fy);
+}
 // Interpolate a quality surface across the pitch from the measured points and colour
 // it on the continuous FIFA ramp (thermal look, but red=unacceptable … green=excellent).
 function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
@@ -1730,17 +1758,21 @@ function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
   pos.forEach((pp,k)=>{ const val=vals[k]; if(val==null||isNaN(val)) return;
     const q=fifaScore(key,val,grass,hybrid); if(q==null) return;
     pts.push({x:pp[0]*iw, y:pp[1]*ih, q}); });
-  if(pts.length){
+  const t=TKEY[key];
+  const G = (t&&t.n===25) ? heatGrid5(key,vals,grass,hybrid) : null;   // bicubic grid for the 25-pos metrics
+  if(G || pts.length){
     // Render the surface at a capped resolution (it's smooth, so upscaling is seamless) to keep export fast on phones.
-    const GW=Math.max(2,Math.min(220,Math.round(iw))), GH=Math.max(2,Math.round(GW*ih/iw)), sx=GW/iw, sy=GH/ih;
-    const gp=pts.map(pt=>({x:pt.x*sx, y:pt.y*sy, q:pt.q}));
+    const GW=Math.max(2,Math.min(220,Math.round(iw))), GH=Math.max(2,Math.round(GW*ih/iw));
     const off=document.createElement('canvas'); off.width=GW; off.height=GH;
     const octx=off.getContext('2d'), img=octx.createImageData(GW,GH), d=img.data;
+    // IDW fallback (used only when points aren't a 25-pos grid)
+    const sx=GW/iw, sy=GH/ih, gp=pts.map(pt=>({x:pt.x*sx, y:pt.y*sy, q:pt.q}));
     for(let y=0;y<GH;y++){ for(let x=0;x<GW;x++){
-      let sw=0,sq=0;
-      for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1;
-        const wgt=1/d2; sw+=wgt; sq+=wgt*gp[i].q; }
-      const [r,g,b]=qColorRGB(sq/sw); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
+      let q;
+      if(G){ const fx=GW>1?x/(GW-1):0, fy=GH>1?y/(GH-1):0;     // nodes sit at field-fractions .1..0.9 → grid coord = 5f-0.5
+        q=bicubicSample(G, 5*fx-0.5, 5*fy-0.5); }
+      else { let sw=0,sq=0; for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1; const wt=1/d2; sw+=wt; sq+=wt*gp[i].q; } q=sq/sw; }
+      const [r,g,b]=qColorRGB(q); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
     }}
     octx.putImageData(img,0,0);
     ctx.imageSmoothingEnabled=true; if('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality='high';
