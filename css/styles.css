@@ -97,6 +97,8 @@ h2.sec{font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(-
 .pchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
 .pchip .ren{margin-left:4px;opacity:.9;font-weight:400;padding:3px 6px;margin-right:-6px;border-radius:12px}
 .pchip .ren:active{background:rgba(255,255,255,.25)}
+.pchip .ren.del{margin-left:2px;font-size:11px}
+.pchip .ren.del:active{background:rgba(255,255,255,.35)}
 .uiprompt-ov{position:fixed;inset:0;background:rgba(40,40,42,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:24px}
 .uiprompt{background:#fff;border-radius:14px;padding:18px;width:100%;max-width:340px;box-shadow:0 12px 40px rgba(0,0,0,.3)}
 .uiprompt-t{font-weight:700;margin-bottom:10px;color:#28282A}

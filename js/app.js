@@ -27,6 +27,23 @@ const VWC_POOL=['moisture','moisture2','moisture3','moisture4'];       // availa
 const VWC_DEFAULT_ACTIVE=['moisture','moisture2'];                     // two preloaded by default
 const VWC_DEFAULT_DEPTH={moisture:'3.8 cm',moisture2:'7.6 cm',moisture3:'12.2 cm',moisture4:'7.6 cm'};
 const TKEY = Object.fromEntries(TESTS.map(t=>[t.key,t]));
+// Reduced testing: in a multi-pitch venue, only the chosen ★ benchmark pitch gets the
+// full high-density grid for the priority metrics. Every other pitch tests just 9 spots
+// (a 3×3 grid) for NDVI, Clegg, surface traction and the VWC depths. All other metrics
+// keep their normal count. Single-pitch venues are always treated as full (the benchmark).
+const REDUCIBLE = new Set(['ndvi','clegg','traction','moisture','moisture2','moisture3','moisture4']);
+const REDUCED_N = 9;
+function venueOf(p){ if(!p) return null; const vs=(typeof state!=='undefined'&&state&&state.venues)||[];
+  return vs.find(v=>v.pitches&&v.pitches.some(x=>x===p||(x.id&&x.id===p.id)))||null; }
+function pitchReduced(p){ const v=venueOf(p); if(!v||!v.pitches||v.pitches.length<=1) return false;
+  return !(p.bench&&p.bench.role==='bench'); }   // reduced for every pitch except the venue benchmark
+// Effective number of test positions for a pitch+metric (9 when reduced, else the metric's base count).
+function effN(p,key){ const t=TKEY[key]; if(!t) return 0;
+  return (REDUCIBLE.has(key)&&t.n>REDUCED_N&&pitchReduced(p))?REDUCED_N:t.n; }
+// Active readings/stats for a pitch+metric, sliced to the effective count (values are always
+// stored full-length, so promoting a pitch to benchmark restores any extra positions intact).
+function valsN(p,key){ const td=p&&p.tests&&p.tests[key]; return ((td&&td.values)||[]).slice(0,effN(p,key)); }
+function statN(p,key){ return stats(valsN(p,key)); }
 // The active VWC slot keys for a pitch (initialises p.vwc on first read; includes any slot with data).
 function vwcKeys(p){
   if(!p) return VWC_DEFAULT_ACTIVE.slice();
@@ -720,6 +737,7 @@ function dotFontSVG(lbl){ const L=String(lbl).length; return L<=2?9:(L===3?7.4:6
 /* ----------------------------- router ----------------------------- */
 const TOP=['home','settings'];
 let stack=['home'];
+let _lastRoute=null;   // track the rendered route so we only scroll to top on real navigation, not in-place re-renders
 function go(route,push){ if(push)stack.push(route); else if(TOP.includes(route))stack=[route]; else if(stack[stack.length-1]!==route)stack.push(route); render(); }
 function back(){ if(stack.length>1){stack.pop(); render();} }
 function goReplace(route){ stack[stack.length-1]=route; render(); }
@@ -749,7 +767,8 @@ function render(){
   $('backBtn').style.display = stack.length>1?'flex':'none';
   $('tabbar').style.display = TOP.includes(r)?'flex':'none';
   document.querySelectorAll('.tabbar button').forEach(b=>b.classList.toggle('on',b.dataset.tab===(TOP.includes(r)?r:null)));
-  $('app').parentElement.scrollTop=0;
+  if(r!==_lastRoute) $('app').parentElement.scrollTop=0;   // only jump to top when the screen actually changes (adding a pitch re-renders 'venue' in place)
+  _lastRoute=r;
   bind();
 }
 
@@ -758,7 +777,7 @@ function venueProgress(v){
   // Granular: every individual measurement counts, so the bar moves on each value entered
   // (not just when a test parameter gets its first reading).
   let done=0,total=0;
-  v.pitches.forEach(p=>{ pitchTestList(p).forEach(t=>{ const td=p.tests&&p.tests[t.key]; total+=(t.n||0); if(td) done+=stats(td.values).done; }); });   // only active VWC slots count
+  v.pitches.forEach(p=>{ pitchTestList(p).forEach(t=>{ total+=effN(p,t.key); done+=statN(p,t.key).done; }); });   // only active VWC slots count · reduced pitches count their 9 spots
   return total?Math.round(done/total*100):0;
 }
 function scrHome(){
@@ -779,7 +798,7 @@ function scrHome(){
 function scrVenue(){
   const v=venue(), p=pitch();
   const wr=v.wr?`<div class="note wr"><b>World Rugby (confidential):</b> ${esc(v.wr)}</div>`:'';
-  const chips=`<div class="pchips">${v.pitches.map((pp,i)=>`<div class="pchip ${i===CURP?'on':''}" data-pitch="${i}">${esc(pp.name)}${i===CURP?` <span class="ren" data-renamepitch="${i}" title="Rename pitch">✎</span>`:''}</div>`).join('')}<div class="pchip add" data-addpitch="1">+ pitch</div></div>`;
+  const chips=`<div class="pchips">${v.pitches.map((pp,i)=>`<div class="pchip ${i===CURP?'on':''}" data-pitch="${i}">${esc(pp.name)}${i===CURP?` <span class="ren" data-renamepitch="${i}" title="Rename pitch">✎</span>${v.pitches.length>1?` <span class="ren del" data-delpitch="${i}" title="Delete pitch">✕</span>`:''}`:''}</div>`).join('')}<div class="pchip add" data-addpitch="1">+ pitch</div></div>`;
   const af=v.briefLoaded?' af':'';
   const head=`<div class="card">
     <div class="kv"><span class="k">Venue</span><span class="v${af}">${esc(v.name)}</span></div>
@@ -838,21 +857,21 @@ function scrVenue(){
     if(t.depthSel){   // VWC pool: render one row per active depth slot + an "Add another depth" row
       if(vwcDone) return ''; vwcDone=true;
       const keys=vwcKeys(p);
-      const rows=keys.map(k=>{ const tk=TKEY[k], st=stats(p.tests[k].values);
-        const status=st.done?`<span class="pill">${st.done}/${tk.n}</span>`:'<span class="chev">›</span>';
+      const rows=keys.map(k=>{ const tk=TKEY[k], st=statN(p,k), nk=effN(p,k);
+        const status=st.done?`<span class="pill">${st.done}/${nk}</span>`:'<span class="chev">›</span>';
         return `<div class="row" data-go="test:${k}"><div class="ic">⬡</div>
           <div class="meta"><div class="t">${esc(testDisplayName(p,k))} ${tk.pri?'<span class="badge-pri">PRIORITY</span>':''}</div>
-          <div class="d">${tk.n} positions${st.avg!=null?` · avg ${fmt(st.avg,tk.unit)}`:''}</div></div>${status}</div>`;
+          <div class="d">${nk} positions${st.avg!=null?` · avg ${fmt(st.avg,tk.unit)}`:''}</div></div>${status}</div>`;
       }).join('');
       const add=keys.length<VWC_POOL.length ? `<div class="row" data-addvwc="1" style="cursor:pointer"><div class="ic">＋</div>
         <div class="meta"><div class="t">Add another depth</div><div class="d">Record VWC at a different probe depth</div></div><span class="chev">›</span></div>` : '';
       return rows+add;
     }
-    const st=stats(p.tests[t.key].values);
-    const status=st.done?`<span class="pill">${st.done}/${t.n}</span>`:'<span class="chev">›</span>';
+    const st=statN(p,t.key), nk=effN(p,t.key);
+    const status=st.done?`<span class="pill">${st.done}/${nk}</span>`:'<span class="chev">›</span>';
     return `<div class="row" data-go="test:${t.key}"><div class="ic">⬡</div>
       <div class="meta"><div class="t">${esc(t.name)} ${t.pri?'<span class="badge-pri">PRIORITY</span>':''}</div>
-      <div class="d">${t.n} position${t.n>1?'s':''}${st.avg!=null?` · avg ${fmt(st.avg,t.unit)}`:''}</div></div>${status}</div>`;
+      <div class="d">${nk} position${nk>1?'s':''}${st.avg!=null?` · avg ${fmt(st.avg,t.unit)}`:''}</div></div>${status}</div>`;
   }).join('');
 
   return `${wr}${chips}${head}
@@ -902,10 +921,10 @@ function scrAudit(code){
 }
 
 function scrTest(key){
-  const t=TKEY[key]; const p=pitch(); const td=p.tests[key]; const st=stats(td.values);
-  const grid=td.values.map((v,i)=>`<div class="posbox ${v!=null?'done':''}">
+  const t=TKEY[key]; const p=pitch(); const td=p.tests[key]; const N=effN(p,key); const st=statN(p,key);
+  const grid=valsN(p,key).map((v,i)=>`<div class="posbox ${v!=null?'done':''}">
     <div class="pn">P${i+1}</div>
-    <input data-pos="${i}" inputmode="decimal" enterkeyhint="${i<td.values.length-1?'next':'done'}" placeholder="–" value="${v!=null?v:''}">
+    <input data-pos="${i}" inputmode="decimal" enterkeyhint="${i<N-1?'next':'done'}" placeholder="–" value="${v!=null?v:''}">
     <div class="pu">${esc(t.unit)||'&nbsp;'}</div></div>`).join('');
   const noteLine=t.note?`<div class="hint">${esc(t.note)}</div>`:'';
   const _tl=pitchTestList(p); const idx=_tl.findIndex(x=>x.key===key), nx=_tl[idx+1];   // skip inactive VWC slots
@@ -922,7 +941,7 @@ function scrTest(key){
   const depthBox = t.depthSel ? `<div class="card" style="padding:10px 12px;margin-bottom:8px"><div class="field" style="margin:0">
       <label>Measurement depth</label>
       <select id="vwcDepth">${VWC_DEPTHS.map(dp=>`<option ${ (td.depth||VWC_DEPTHS[0])===dp?'selected':''}>${esc(dp)}</option>`).join('')}</select></div></div>` : '';
-  return `<div class="hint">${esc(t.name)}${t.depthSel&&td.depth?' — '+esc(td.depth):''} · ${t.n} position${t.n>1?'s':''}${t.pri?' · <b style="color:var(--crit)">priority</b>':''} <span class="saved" id="savedFlag">saved ✓</span></div>
+  return `<div class="hint">${esc(t.name)}${t.depthSel&&td.depth?' — '+esc(td.depth):''} · ${N} position${N>1?'s':''}${t.pri?' · <b style="color:var(--crit)">priority</b>':''} <span class="saved" id="savedFlag">saved ✓</span></div>
     ${depthBox}
     ${pitchSVG(key)}
     <div class="leg"><span><i class="dot" style="background:var(--green)"></i> recorded</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
@@ -930,7 +949,7 @@ function scrTest(key){
       <div class="stat">
         <div class="s"><div class="l">Average</div><div class="n" id="tAvg">${st.avg!=null?fmt(st.avg,''):'—'}</div></div>
         <div class="s"><div class="l">Max var.</div><div class="n" id="tVar">${st.varPct!=null?st.varPct+'%':'—'}</div></div>
-        <div class="s"><div class="l">Done</div><div class="n" id="tDone">${st.done}/${t.n}</div></div>
+        <div class="s"><div class="l">Done</div><div class="n" id="tDone">${st.done}/${N}</div></div>
       </div>
       <div class="posgrid" id="posGrid">${grid}</div>
     </div>${noteLine}
@@ -993,7 +1012,7 @@ function scrRisk(){
 
 function scrResults(){
   const p=pitch();
-  const rows=pitchTestList(p).map(t=>{const st=stats(p.tests[t.key].values);
+  const rows=pitchTestList(p).map(t=>{const st=statN(p,t.key);
     const dim=st.avg==null?'dim':'';
     return `<tr class="${t.pri?'pri':''}"><td>${esc(testDisplayName(p,t.key))} ${t.pri?'<span class="badge-pri">PRI</span>':''}</td>
       <td class="num ${dim}">${st.avg!=null?fmt(st.avg,t.unit):'—'}</td>
@@ -1121,13 +1140,15 @@ function defaultPositions(n){
   let pts;
   if(n<=3) pts=[[.5,.28],[.5,.5],[.5,.72]];
   else if(n===6) pts=[[.28,.3],[.28,.7],[.5,.3],[.5,.7],[.72,.3],[.72,.7]];
+  else if(n===9){ pts=[]; const g=[1/6,0.5,5/6];   // 3×3 snake grid (reduced non-benchmark survey)
+    g.forEach((y,r)=>{ const xs=(r%2)?g.slice().reverse():g; xs.forEach(x=>pts.push([x,y])); }); }   // P1-3 top L→R, P4-6 mid R→L, P7-9 bottom L→R — aligns with heatGridN(side=3)
   else if(n===25){ pts=[]; const g=[.1,.3,.5,.7,.9];   // snake / boustrophedon numbering
     g.forEach((y,r)=>{ const xs=(r%2)?g.slice().reverse():g; xs.forEach(x=>pts.push([x,y])); }); }   // row1 L→R (1-5), row2 R→L (6 on right…10 on left)… ending P25 bottom-right
   else pts=[[.16,.3],[.16,.7],[.38,.3],[.38,.7],[.5,.3],[.5,.7],[.62,.3],[.62,.7],[.84,.3],[.84,.7],[.5,.12],[.5,.88]];
   return pts.slice(0,n).map(p=>p.slice());
 }
-function testPositions(p,key){ const t=TKEY[key]; const td=p.tests&&p.tests[key];
-  if(td&&td.positions&&td.positions.length===t.n) return td.positions; return defaultPositions(t.n); }
+function testPositions(p,key){ const td=p.tests&&p.tests[key]; const n=effN(p,key);
+  if(td&&td.positions&&td.positions.length===n) return td.positions; return defaultPositions(n); }
 function randomPositions(n){ const pts=[], minD=Math.max(0.08,0.5/Math.sqrt(n));
   for(let i=0;i<n;i++){ let best=null;
     for(let tries=0;tries<30;tries++){ const c=[0.05+Math.random()*0.9, 0.08+Math.random()*0.84];
@@ -1209,7 +1230,7 @@ function bindPitchDrag(){
   let dragging=null;
   function frac(e){ const r=svg.getBoundingClientRect(); const ux=(e.clientX-r.left)/r.width*PW, uy=(e.clientY-r.top)/r.height*PH;
     let fx=(ux-PPAD)/(PW-2*PPAD), fy=(uy-PPAD)/(PH-2*PPAD); return [Math.max(0,Math.min(1,fx)),Math.max(0,Math.min(1,fy))]; }
-  function ensure(){ const td=pitch().tests[key]; if(!td.positions||td.positions.length!==t.n) td.positions=defaultPositions(t.n); return td.positions; }
+  function ensure(){ const p=pitch(); const td=p.tests[key]; const n=effN(p,key); if(!td.positions||td.positions.length!==n) td.positions=defaultPositions(n); return td.positions; }
   svg.querySelectorAll('.dot').forEach(g=>g.addEventListener('pointerdown',ev=>{ ev.preventDefault(); dragging=+g.dataset.i; ensure(); try{svg.setPointerCapture(ev.pointerId);}catch(e){} }));
   svg.addEventListener('pointermove',ev=>{ if(dragging==null)return; const pos=ensure(); pos[dragging]=frac(ev);
     const x=PPAD+pos[dragging][0]*(PW-2*PPAD), y=PPAD+pos[dragging][1]*(PH-2*PPAD), g=svg.querySelector('.dot[data-i="'+dragging+'"]');
@@ -1263,6 +1284,7 @@ function bind(){
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
   app.querySelectorAll('[data-addvwc]').forEach(e=>e.onclick=addVwcDepth);
   app.querySelectorAll('[data-renamepitch]').forEach(e=>e.onclick=ev=>{ev.stopPropagation();renamePitch(+e.dataset.renamepitch);});
+  app.querySelectorAll('[data-delpitch]').forEach(e=>e.onclick=ev=>{ev.stopPropagation();deletePitchAt(+e.dataset.delpitch);});
 
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
   if($('addVenue'))$('addVenue').onclick=addVenueManual;
@@ -1286,8 +1308,8 @@ function bind(){
         const lv=done?fifaLevelFor(venue(),pitch(),key,stored):null;
         g.querySelector('circle').setAttribute('fill',done?(lv?QC[lv]:'#1f7a4d'):'#fff'); g.querySelector('circle').setAttribute('stroke',done?(lv?QSTROKE[lv]:'#155c39'):'#c2cad2');
         tx.textContent=lbl; tx.setAttribute('fill',done?(lv?qTextColor(lv):'#fff'):'#6b7785'); tx.setAttribute('font-size',dotFontSVG(lbl)); }
-      const st=stats(pitch().tests[key].values);
-      $('tAvg').textContent=st.avg!=null?fmt(st.avg,''):'—'; $('tVar').textContent=st.varPct!=null?st.varPct+'%':'—'; $('tDone').textContent=st.done+'/'+TKEY[key].n;
+      const st=statN(pitch(),key);
+      $('tAvg').textContent=st.avg!=null?fmt(st.avg,''):'—'; $('tVar').textContent=st.varPct!=null?st.varPct+'%':'—'; $('tDone').textContent=st.done+'/'+effN(pitch(),key);
       save(true);
     };
     // Enter / keyboard "next" key → jump to the next position box (works on desktop + Android)
@@ -1295,7 +1317,7 @@ function bind(){
   });
   bindPitchDrag();
   if(cur().startsWith('grp:')){ const g=GKEY[cur().split(':')[1]]; if(g) bindGroupEntry(g); }   // combined turf/weed/height entry
-  if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); pitch().tests[key].posTs=Date.now(); save(true); render(); toast('Positions randomized'); };
+  if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(effN(pitch(),key)); pitch().tests[key].posTs=Date.now(); save(true); render(); toast('Positions randomized'); };
   if($('resetDots'))$('resetDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=null; pitch().tests[key].posTs=Date.now(); save(true); render(); toast('Positions reset to default'); };
   if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const tl=pitchTestList(pitch()); const i=tl.findIndex(x=>x.key===key); const nx=tl[i+1]; if(nx)goReplace('test:'+nx.key); };
   if($('vwcDepth'))$('vwcDepth').onchange=()=>{ pitch().tests[cur().split(':')[1]].depth=$('vwcDepth').value; save(true); render(); };   // depth shows in header + venue row title
@@ -1380,6 +1402,11 @@ function addVwcDepth(){ const p=pitch(); const keys=vwcKeys(p); const next=VWC_P
 async function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=await uiPrompt('Rename pitch',p.name); if(name==null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
 function editVenue(){ go('venueform',true); }
+function deletePitchAt(i){ const v=venue(); if(!v) return; const p=v.pitches[i]; if(!p) return;
+  if(v.pitches.length<=1){ deletePitchOrVenue(); return; }   // last pitch → fall back to venue delete
+  if(confirm('Delete pitch “'+p.name+'” and its data?')){ v.pitches.splice(i,1);
+    if(CURP>=v.pitches.length) CURP=v.pitches.length-1; if(CURP<0) CURP=0;
+    save(); render(); toast('Pitch deleted'); } }
 function deletePitchOrVenue(){ const v=venue();
   if(v.pitches.length>1){ if(confirm('Delete pitch “'+v.pitches[CURP].name+'” and its data?')){v.pitches.splice(CURP,1);CURP=0;save();render();toast('Pitch deleted');} }
   else { if(confirm('Delete venue “'+v.name+'” and all its data? This cannot be undone.')){state.venues=state.venues.filter(x=>x.id!==v.id);save();go('home');toast('Venue deleted');} } }
@@ -1516,8 +1543,8 @@ function csvForVenue(onlyVenue){
   const rows=[['Venue','Pitch','Category','Item','Value','Unit']];
   const vs=onlyVenue?[onlyVenue]:state.venues;
   vs.forEach(v=>v.pitches.forEach(p=>{
-    pitchTestList(p).forEach(t=>{ const nm=testDisplayName(p,t.key); const td=p.tests[t.key]; td.values.forEach((val,i)=>rows.push([v.name,p.name,'Test: '+nm,'P'+(i+1),val==null?'':val,t.unit]));
-      const st=stats(td.values); rows.push([v.name,p.name,'Test summary',nm+' — average',st.avg!=null?Math.round(st.avg*100)/100:'',t.unit]);
+    pitchTestList(p).forEach(t=>{ const nm=testDisplayName(p,t.key); valsN(p,t.key).forEach((val,i)=>rows.push([v.name,p.name,'Test: '+nm,'P'+(i+1),val==null?'':val,t.unit]));
+      const st=statN(p,t.key); rows.push([v.name,p.name,'Test summary',nm+' — average',st.avg!=null?Math.round(st.avg*100)/100:'',t.unit]);
       rows.push([v.name,p.name,'Test summary',nm+' — max variance %',st.varPct!=null?st.varPct:'','%']);
       if(td.method) rows.push([v.name,p.name,'Test method',nm,td.method,'']);
       if(td.comment) rows.push([v.name,p.name,'Test comment',nm,td.comment,'']); });
@@ -1636,10 +1663,10 @@ function buildReportData(v,p){
   RISK.forEach(([k])=>{ const s=RISK_SENTINEL[k]; if(s) fills.push([s, RISK_LEVEL_COLOR[p.risk[k]||0]]); });
   d.__riskFills=fills;
   // results
-  RES_KEYS.forEach(k=>{ const t=TKEY[k]; const st=stats(p.tests[k].values);
+  RES_KEYS.forEach(k=>{ const t=TKEY[k]; const st=statN(p,k);
     d['res_'+k+'_avg']=st.avg!=null?fmt(st.avg,t.unit):''; d['res_'+k+'_var']=st.varPct!=null?String(st.varPct):''; d['res_'+k+'_cmt']=p.tests[k].comment||''; });
   // VWC results — one looped row per active depth slot ({#moisture_rows}…{/moisture_rows} in the template)
-  d.moisture_rows=vwcResRows(p).map(({key,label})=>{ const st=stats(p.tests[key].values);
+  d.moisture_rows=vwcResRows(p).map(({key,label})=>{ const st=statN(p,key);
     return { label, avg: st.avg!=null?fmt(st.avg,'%'):'', var: st.varPct!=null?String(st.varPct):'', cmt: p.tests[key].comment||'' }; });
   // audit fields
   AUDIT.forEach(s=>{ const map=REPORT_MAP[s[0]]||{}; const f=p.audit[s[0]].fields;
@@ -1698,9 +1725,9 @@ function buildTestMapsImage(p,v){
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   shown.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
-    const st=stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]);
+    const st=statN(p,t.key);
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText(mapTitleName(p,t.key)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
+    ctx.fillText(mapTitleName(p,t.key)+'  ('+effN(p,t.key)+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
     drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key,v,true);   // hide unmeasured (pending) dots
   });
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
@@ -1712,9 +1739,9 @@ function buildSingleTestMapImage(p,key,v){
   const W=cellW+pad*2, H=mapH+titleH+pad*2;
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
-  const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
+  const st=statN(p,key);
   ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText(noParen(t.name)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
+  ctx.fillText(noParen(t.name)+'  ('+effN(p,key)+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
   drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v,true);   // hide unmeasured (pending) dots
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
@@ -1724,26 +1751,27 @@ function buildSingleTestMapImage(p,key,v){
 // so a standalone reading stays a visible local peak/dip instead of being washed out.
 function cmRom(p0,p1,p2,p3,t){ const t2=t*t, t3=t2*t;
   return 0.5*((2*p1)+(-p0+p2)*t+(2*p0-5*p1+4*p2-p3)*t2+(-p0+3*p1-3*p2+p3)*t3); }
-// Build a 5×5 grid of quality scores from the 25 readings (snake-numbered positions),
-// filling any un-measured nodes by relaxation so the bicubic surface stays continuous.
-function heatGrid5(key,vals,grass,hybrid){
-  const G=Array.from({length:5},()=>Array(5).fill(null)); let any=false;
-  for(let k=0;k<25;k++){ const val=vals[k]; if(val==null||isNaN(val)) continue;
+// Build an S×S grid of quality scores from S² snake-numbered readings (S=5 for the full
+// 25-spot survey, S=3 for a reduced 9-spot non-benchmark pitch), filling any un-measured
+// nodes by relaxation so the bicubic surface stays continuous.
+function heatGridN(key,vals,grass,hybrid,S){
+  const G=Array.from({length:S},()=>Array(S).fill(null)); let any=false;
+  for(let k=0;k<S*S;k++){ const val=vals[k]; if(val==null||isNaN(val)) continue;
     const q=fifaScore(key,val,grass,hybrid); if(q==null) continue;
-    const row=Math.floor(k/5), pir=k%5, col=(row%2===0)?pir:4-pir; G[row][col]=q; any=true; }
+    const row=Math.floor(k/S), pir=k%S, col=(row%2===0)?pir:S-1-pir; G[row][col]=q; any=true; }
   if(!any) return null;
   const known=G.map(r=>r.map(v=>v!=null));
-  let sum=0,n=0; for(let r=0;r<5;r++)for(let c=0;c<5;c++) if(known[r][c]){sum+=G[r][c];n++;}
+  let sum=0,n=0; for(let r=0;r<S;r++)for(let c=0;c<S;c++) if(known[r][c]){sum+=G[r][c];n++;}
   const mean=sum/n;
-  for(let r=0;r<5;r++)for(let c=0;c<5;c++) if(!known[r][c]) G[r][c]=mean;     // seed gaps
-  for(let it=0;it<60;it++){ for(let r=0;r<5;r++)for(let c=0;c<5;c++){ if(known[r][c]) continue;
-    let s=0,m=0; if(r>0){s+=G[r-1][c];m++;} if(r<4){s+=G[r+1][c];m++;} if(c>0){s+=G[r][c-1];m++;} if(c<4){s+=G[r][c+1];m++;}
+  for(let r=0;r<S;r++)for(let c=0;c<S;c++) if(!known[r][c]) G[r][c]=mean;     // seed gaps
+  for(let it=0;it<60;it++){ for(let r=0;r<S;r++)for(let c=0;c<S;c++){ if(known[r][c]) continue;
+    let s=0,m=0; if(r>0){s+=G[r-1][c];m++;} if(r<S-1){s+=G[r+1][c];m++;} if(c>0){s+=G[r][c-1];m++;} if(c<S-1){s+=G[r][c+1];m++;}
     G[r][c]=s/m; } }                                                          // relax gaps toward neighbours
   return G;
 }
-// Sample the 5×5 grid at continuous grid coords (0..4) with bicubic (Catmull-Rom), clamping at edges.
-function bicubicSample(G,gx,gy){
-  const cl=i=>i<0?0:i>4?4:i, ix=Math.floor(gx), fx=gx-ix, iy=Math.floor(gy), fy=gy-iy, col=[];
+// Sample the S×S grid at continuous grid coords (0..S-1) with bicubic (Catmull-Rom), clamping at edges.
+function bicubicSampleN(G,gx,gy,S){
+  const cl=i=>i<0?0:i>S-1?S-1:i, ix=Math.floor(gx), fx=gx-ix, iy=Math.floor(gy), fy=gy-iy, col=[];
   for(let m=-1;m<=2;m++){ const r=cl(iy+m);
     col.push(cmRom(G[r][cl(ix-1)],G[r][cl(ix)],G[r][cl(ix+1)],G[r][cl(ix+2)],fx)); }
   return cmRom(col[0],col[1],col[2],col[3],fy);
@@ -1759,7 +1787,8 @@ function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
     const q=fifaScore(key,val,grass,hybrid); if(q==null) return;
     pts.push({x:pp[0]*iw, y:pp[1]*ih, q}); });
   const t=TKEY[key];
-  const G = (t&&t.n===25) ? heatGrid5(key,vals,grass,hybrid) : null;   // bicubic grid for the 25-pos metrics
+  const N=effN(p,key), side = N===25 ? 5 : (N===9 ? 3 : 0);            // 5×5 full survey · 3×3 reduced non-benchmark · else IDW
+  const G = side ? heatGridN(key,vals,grass,hybrid,side) : null;       // bicubic grid for the grid-shaped metrics
   if(G || pts.length){
     // Render the surface at a capped resolution (it's smooth, so upscaling is seamless) to keep export fast on phones.
     const GW=Math.max(2,Math.min(220,Math.round(iw))), GH=Math.max(2,Math.round(GW*ih/iw));
@@ -1769,8 +1798,8 @@ function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
     const sx=GW/iw, sy=GH/ih, gp=pts.map(pt=>({x:pt.x*sx, y:pt.y*sy, q:pt.q}));
     for(let y=0;y<GH;y++){ for(let x=0;x<GW;x++){
       let q;
-      if(G){ const fx=GW>1?x/(GW-1):0, fy=GH>1?y/(GH-1):0;     // nodes sit at field-fractions .1..0.9 → grid coord = 5f-0.5
-        q=bicubicSample(G, 5*fx-0.5, 5*fy-0.5); }
+      if(G){ const fx=GW>1?x/(GW-1):0, fy=GH>1?y/(GH-1):0;     // nodes sit at field-fractions (i+0.5)/side → grid coord = side·f-0.5
+        q=bicubicSampleN(G, side*fx-0.5, side*fy-0.5, side); }
       else { let sw=0,sq=0; for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1; const wt=1/d2; sw+=wt; sq+=wt*gp[i].q; } q=sq/sw; }
       const [r,g,b]=qColorRGB(q); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
     }}
@@ -1804,9 +1833,9 @@ function buildHeatMapImage(p,key,v){
   const W=cellW+pad*2, H=titleH+mapH+legendH+pad*2;
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
-  const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
+  const st=statN(p,key);
   ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText(mapTitleName(p,key)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
+  ctx.fillText(mapTitleName(p,key)+'  ('+effN(p,key)+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
   drawHeatOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v);
   drawQualityBar(ctx,pad,pad+titleH+mapH+12,cellW,key,pitchGrass(v,p));
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
@@ -2062,9 +2091,9 @@ function reportSheet(v,p){
   const E=esc; const ol=p.overall.level;
   const riskRows=RISK.map(([k,label])=>{const lv=p.risk[k]||0;
     return `<tr><td>${E(label)}</td><td>${lv?RLABEL[lv]:'—'}</td><td style="${riskCellStyle(lv)}">${lv?lv:'—'}</td></tr>`;}).join('');
-  const resRows=RES_KEYS.map(k=>{const t=TKEY[k],st=stats(p.tests[k].values);
+  const resRows=RES_KEYS.map(k=>{const t=TKEY[k],st=statN(p,k);
     return rrow([E(t.name),st.avg!=null?E(fmt(st.avg,t.unit)):'—',st.varPct!=null?st.varPct:'—',E(p.tests[k].comment||'')]);}).join('')
-    + vwcResRows(p).map(({key,label})=>{const st=stats(p.tests[key].values);
+    + vwcResRows(p).map(({key,label})=>{const st=statN(p,key);
         return rrow([E(label),st.avg!=null?E(fmt(st.avg,'%')):'—',st.varPct!=null?st.varPct:'—',E(p.tests[key].comment||'')]);}).join('');
   const appendix=AUDIT.map(s=>{const f=p.audit[s[0]].fields;const rows=s[4].map(([label])=>{const val=f[label];return rrow([E(label),val?E(val):'—']);}).join('');
     return `<h3>Appendix ${s[0]} — ${E(s[1])}</h3><table class="t2">${rows}</table>`;}).join('');
