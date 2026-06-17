@@ -40,6 +40,9 @@ function pitchTestList(p){ const out=[]; let vwcDone=false;
   return out; }
 // Display name for a test on a pitch — VWC slots append their chosen depth.
 function testDisplayName(p,key){ const t=TKEY[key]; const d=t&&t.depthSel&&p.tests[key]&&p.tests[key].depth; return (t?t.name:key)+(d?' — '+d:''); }
+// Drop any "(…)" descriptor from a metric name for the report (e.g. "Soil moisture (VWC)" → "Soil moisture").
+function noParen(s){ return String(s||'').replace(/\s*\([^)]*\)/g,'').replace(/\s{2,}/g,' ').trim(); }
+function mapTitleName(p,key){ return noParen(testDisplayName(p,key)); }
 
 // Grouped tests: several metrics recorded at the SAME shared positions, entered together on one screen.
 // Data still lives in each member's own tests[key] bucket, so reports/CSV/results are unchanged.
@@ -156,6 +159,7 @@ const QKNOTS = {
   moisture_warm:   [[3,1],[5,1.5],[10,2.5],[12,3.5],[15,4.5],[17.5,5],[20,4.5],[25,3.5],[30,2.5],[35,1.5],[38,1]],
 };
 function qKnotsFor(metricKey, grass, hybrid){
+  if(/^moisture\d*$/.test(metricKey)) metricKey='moisture';   // all VWC depth slots share the moisture scale
   switch(metricKey){
     case 'ndvi':        return grass==='warm'?QKNOTS.ndvi_warm : grass==='cool'?QKNOTS.ndvi_cool : null;
     case 'soil':        return hybrid?QKNOTS.soil_hybrid:QKNOTS.soil;
@@ -668,6 +672,24 @@ function dedupeVenues(){
 const $=id=>document.getElementById(id);
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(m){const t=$('toast');t.innerHTML=m;t.classList.add('show');clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),2400);}
+// In-app text prompt. window.prompt() is silently blocked in iOS home-screen (standalone) PWAs,
+// so rename/add-pitch did nothing there. This modal works everywhere. Resolves to the string, or null if cancelled.
+function uiPrompt(title, def){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div'); ov.className='uiprompt-ov';
+    ov.innerHTML=`<div class="uiprompt"><div class="uiprompt-t">${esc(title)}</div>
+      <input class="uiprompt-in" type="text" value="${esc(def==null?'':def)}">
+      <div class="uiprompt-btns"><button class="btn ghost" data-act="cancel">Cancel</button><button class="btn primary" data-act="ok">Save</button></div></div>`;
+    document.body.appendChild(ov);
+    const inp=ov.querySelector('.uiprompt-in'); let closed=false;
+    const done=val=>{ if(closed)return; closed=true; ov.remove(); resolve(val); };
+    ov.querySelector('[data-act="cancel"]').onclick=()=>done(null);
+    ov.querySelector('[data-act="ok"]').onclick=()=>done(inp.value);
+    ov.onclick=e=>{ if(e.target===ov) done(null); };                 // tap backdrop = cancel
+    inp.onkeydown=e=>{ if(e.key==='Enter'){e.preventDefault();done(inp.value);} else if(e.key==='Escape'){done(null);} };
+    setTimeout(()=>{ try{ inp.focus(); inp.select(); }catch(e){} },50);
+  });
+}
 function stats(values){
   const nums=values.filter(v=>typeof v==='number'&&!isNaN(v));
   if(!nums.length) return {n:0,avg:null,varPct:null,done:0};
@@ -1334,13 +1356,13 @@ function bind(){
 }
 
 /* ----------------------------- actions ----------------------------- */
-function addPitch(){ const name=prompt('Name for the new pitch:','Pitch '+(venue().pitches.length+1)); if(!name)return; venue().pitches.push(newPitch(name.trim())); CURP=venue().pitches.length-1; save(); render(); }
+async function addPitch(){ const name=await uiPrompt('Name for the new pitch','Pitch '+(venue().pitches.length+1)); if(name==null)return; const t=name.trim(); if(!t)return; venue().pitches.push(newPitch(t)); CURP=venue().pitches.length-1; save(); render(); }
 function addVwcDepth(){ const p=pitch(); const keys=vwcKeys(p); const next=VWC_POOL.find(k=>!keys.includes(k));
   if(!next){ toast('Maximum depths reached'); return; }
   keys.push(next);   // activate the next free slot with a fresh bucket + default depth, then open it
   p.tests[next]={values:Array(TKEY[next].n).fill(null),comment:'',method:'',photos:{},depth:VWC_DEFAULT_DEPTH[next]||VWC_DEPTHS[0]};
   save(); go('test:'+next,true); }
-function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=prompt('Rename pitch:',p.name); if(name===null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
+async function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=await uiPrompt('Rename pitch',p.name); if(name==null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
 function editVenue(){ go('venueform',true); }
 function deletePitchOrVenue(){ const v=venue();
@@ -1619,7 +1641,7 @@ function fitBox(w,h,maxW,maxH){ const s=Math.min(maxW/w,maxH/h); return [Math.ro
    (pitchFieldInner + FIFA-coloured dots) so the report maps look identical to the app's.
    The app SVG uses a PW×PH viewBox; we fit it uniformly (keeping the rugby-field
    proportions) into the box and centre it, then draw every marking/dot in viewBox units × s. */
-function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v){
+function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v,hidePending){
   const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[];
   const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
   const s=Math.min(w/PW, h/PH), fw=PW*s, fh=PH*s, bx=ox+(w-fw)/2, by=oy+(h-fh)/2;
@@ -1642,6 +1664,7 @@ function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v){
     line(gx,Y(.40),gx+dir,Y(.40),2); line(gx,Y(.60),gx+dir,Y(.60),2); });
   const r=11*s;
   pos.forEach((pp,k)=>{ const done=vals[k]!=null;
+    if(hidePending && !done) return;                            // Appendix J: only show dots that were actually measured
     const x=TX(ix+pp[0]*iw), y=TY(iy+pp[1]*ih);
     const lbl=done?shortNum(vals[k]):String(k+1);
     const lv=done?fifaLevel(key,vals[k],grass,hybrid):null;     // FIFA band → colour; null = neutral / pending
@@ -1662,8 +1685,8 @@ function buildTestMapsImage(p,v){
   shown.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
     const st=stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]);
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText(testDisplayName(p,t.key)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
-    drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key,v);
+    ctx.fillText(mapTitleName(p,t.key)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
+    drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key,v,true);   // hide unmeasured (pending) dots
   });
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
@@ -1676,12 +1699,16 @@ function buildSingleTestMapImage(p,key,v){
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
   ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
-  drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v);
+  ctx.fillText(noParen(t.name)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
+  drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v,true);   // hide unmeasured (pending) dots
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 
-/* ---- FIFA-quality heat maps (smooth IDW surface, no dots) ---- */
+/* ---- FIFA-quality heat maps (smooth surface, no dots) ---- */
+// Smoothing radius as a fraction of map width (≈ one sample spacing). Higher = smoother /
+// less obvious where points were taken; lower = more localised. Sample columns sit ~0.2 of
+// the field apart, so ~0.20–0.30 blends neighbours without washing out real variation.
+const HEAT_SMOOTH=0.26;
 // Interpolate a quality surface across the pitch from the measured points and colour
 // it on the continuous FIFA ramp (thermal look, but red=unacceptable … green=excellent).
 function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
@@ -1696,12 +1723,14 @@ function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
     // Render the surface at a capped resolution (it's smooth, so upscaling is seamless) to keep export fast on phones.
     const GW=Math.max(2,Math.min(220,Math.round(iw))), GH=Math.max(2,Math.round(GW*ih/iw)), sx=GW/iw, sy=GH/ih;
     const gp=pts.map(pt=>({x:pt.x*sx, y:pt.y*sy, q:pt.q}));
+    // Gaussian-weighted (Shepard) blend: smoothing radius ≈ one sample spacing so neighbouring
+    // points overlap and the surface no longer pins to each reading (removes the "bullseye" discs).
+    const sigma=Math.max(2,GW*HEAT_SMOOTH), inv2s2=1/(2*sigma*sigma);
     const off=document.createElement('canvas'); off.width=GW; off.height=GH;
     const octx=off.getContext('2d'), img=octx.createImageData(GW,GH), d=img.data;
     for(let y=0;y<GH;y++){ for(let x=0;x<GW;x++){
       let sw=0,sq=0;
-      for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1;
-        const wgt=1/d2; sw+=wgt; sq+=wgt*gp[i].q; }
+      for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; const wgt=Math.exp(-(dx*dx+dy*dy)*inv2s2); sw+=wgt; sq+=wgt*gp[i].q; }
       const [r,g,b]=qColorRGB(sq/sw); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
     }}
     octx.putImageData(img,0,0);
@@ -1729,14 +1758,14 @@ function drawQualityBar(ctx,x,y,w,key,grass){
 }
 /* one metric's heat map for Section 3 (title + heat surface + colour key) */
 function buildHeatMapImage(p,key,v){
-  const t=TKEY[key], big=(key==='moisture76');
+  const t=TKEY[key], big=(/^moisture\d*$/.test(key));
   const cellW=big?760:620, mapH=big?360:300, titleH=40, legendH=66, pad=14;
   const W=cellW+pad*2, H=titleH+mapH+legendH+pad*2;
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
   ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
+  ctx.fillText(mapTitleName(p,key)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
   drawHeatOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v);
   drawQualityBar(ctx,pad,pad+titleH+mapH+12,cellW,key,pitchGrass(v,p));
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
@@ -1745,8 +1774,7 @@ function buildHeatMapImage(p,key,v){
 const SEC3_MAPS=[
   ['clegg','map_clegg','cap_clegg','Compaction (Clegg) heat map — measured with a Clegg Impact Soil Tester. Colours show FIFA quality (red = unacceptable → green = excellent).'],
   ['traction','map_traction','cap_traction','Surface traction (19 mm stud) heat map — measured with a studded-disc rotational traction tester. Colours show FIFA quality.'],
-  ['moisture76','map_moisture76','cap_moisture76','Volumetric water content at 76 mm (3 in) heat map — measured with a soil-moisture probe. Colours show FIFA quality.'],
-];
+];   // VWC heat maps are built separately, one per active depth slot (see vwc_maps loop in buildPitchReportData)
 
 function loadImage(src){ return new Promise(res=>{ if(!src||typeof src!=='string'){ res(null); return; }   // skip photos with no image data (avoids GET /undefined 404)
   const im=new Image(); im.onload=()=>res(im); im.onerror=()=>res(null); im.src=src; }); }
@@ -1793,10 +1821,16 @@ async function buildPitchReportData(v,p){
     const has=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]).done>0;
     data['has_'+key]=has;
     if(!has){ data[imgTag]=WHITE_PX; data[capTag]=''; return; }   // no data → section removed, tags still defined
-    const big=(key==='moisture76');
-    try{ const m=buildHeatMapImage(p,key,v); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h, big?560:470, big?640:520); }
+    try{ const m=buildHeatMapImage(p,key,v); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h,470,520); }
     catch(e){ console.error('section-3 heat map failed ('+key+'):',e); data[imgTag]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
     data[capTag]=caption;
+  });
+  // Section 3 — one VWC (soil-moisture) heat map per active depth slot that has readings (looped in the template).
+  data.vwc_maps=vwcKeys(p).filter(k=>stats((p.tests[k]&&p.tests[k].values)||[]).done>0).map(k=>{
+    const depth=(p.tests[k]&&p.tests[k].depth)||''; let img=WHITE_PX;
+    try{ const m=buildHeatMapImage(p,k,v); img=m.dataUrl; sizeMap[img]=fitBox(m.w,m.h,560,640); }
+    catch(e){ console.error('section-3 VWC heat map failed ('+k+'):',e); }
+    return { vwc_img:img, vwc_cap:'Volumetric water content'+(depth?' at '+depth:'')+' heat map — measured with a soil-moisture probe. Colours show FIFA quality.' };
   });
   try{ const sp=await buildSoilPhotosImage(p);
     if(sp){ data.has_soil_photos=true; data.soil_photos=sp.dataUrl; sizeMap[sp.dataUrl]=fitBox(sp.w,sp.h,660,900); }
@@ -1844,7 +1878,59 @@ function renderReportZip(buf,data,sizeMap,withImages){
   doc.render(data);
   const zip=doc.getZip();
   applyRiskFills(zip,data.__riskFills);
+  pruneEmptyReport(zip);
   return zip;
+}
+/* After render, drop table rows whose value cells came back empty, and drop a whole
+   appendix (A–H heading + its table) when none of its rows ended up with data. Keeps
+   the report tight when a survey/test was skipped. Runs on the merged-per-pitch XML. */
+const PRUNE_HEADERS=['parameter','resource','key aspect'];            // first-cell text of header rows (never counts as data)
+function decodeXmlText(s){ return String(s||'').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'"); }
+function rowCellTexts(rowXml){
+  const cells=[]; const tcRe=/<w:tc\b[\s\S]*?<\/w:tc>/g; let m;
+  while((m=tcRe.exec(rowXml))){
+    const txt=(m[0].match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)||[]).map(t=>t.replace(/<[^>]+>/g,'')).join('');
+    cells.push(decodeXmlText(txt));
+  }
+  return cells;
+}
+function rowIsEmptyData(rowXml){                                       // label present + every later cell blank → removable
+  const cells=rowCellTexts(rowXml); if(cells.length<2) return false;
+  if(cells[0].trim()==='') return false;
+  return cells.slice(1).every(c=>c.trim()==='');
+}
+function tableHasData(tblXml){                                         // any non-header row that still carries a value
+  const rows=tblXml.match(/<w:tr\b[\s\S]*?<\/w:tr>/g)||[];
+  return rows.some(r=>{ const cells=rowCellTexts(r); if(cells.length<2) return false;
+    const first=cells[0].trim().toLowerCase();
+    if(PRUNE_HEADERS.some(h=>first.startsWith(h))) return false;
+    return cells.slice(1).some(c=>c.trim()!==''); });
+}
+function pruneReportXml(xml){
+  // 1) remove empty data rows everywhere
+  xml=xml.replace(/<w:tr\b[\s\S]*?<\/w:tr>/g, row=>rowIsEmptyData(row)?'':row);
+  // 2) remove appendix A–H (heading paragraph + table) when the table has no data left
+  const tblRe=/<w:tbl\b[\s\S]*?<\/w:tbl>/g; let m; const drops=[];
+  while((m=tblRe.exec(xml))){
+    const tbl=m[0], tblStart=m.index, tblEnd=tblStart+tbl.length;
+    if(tableHasData(tbl)) continue;
+    const before=xml.slice(0,tblStart);
+    const paras=before.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g);          // last full paragraph before the table = its heading
+    if(!paras||!paras.length) continue;
+    const head=paras[paras.length-1];
+    const headText=decodeXmlText((head.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)||[]).map(t=>t.replace(/<[^>]+>/g,'')).join('')).trim();
+    if(!/^[A-H]\.\s/.test(headText)) continue;                          // only the lettered appendix sections
+    drops.push([before.length-head.length, tblEnd]);
+  }
+  drops.sort((a,b)=>b[0]-a[0]).forEach(([s,e])=>{ xml=xml.slice(0,s)+xml.slice(e); });
+  // 3) strip "(…)" descriptors from the results-summary metric labels (static template text)
+  xml=xml.replace(/Turf Health \(NDVI\)/g,'Turf Health').replace(/Compaction \(Clegg\)/g,'Compaction');
+  return xml;
+}
+function pruneEmptyReport(zip){
+  try{ const f=zip.file('word/document.xml'); if(!f) return;
+    zip.file('word/document.xml', pruneReportXml(f.asText()));
+  }catch(e){ console.warn('prune empty sections failed',e); }
 }
 /* Swap each risk-box sentinel fill for the colour of this pitch's actual level. */
 function applyRiskFills(zip,fills){

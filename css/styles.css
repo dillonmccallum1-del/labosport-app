@@ -95,7 +95,14 @@ h2.sec{font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(-
 .pchips{display:flex;gap:8px;padding:0 2px 4px;flex-wrap:wrap}
 .pchip{font-size:12.5px;font-weight:700;padding:7px 13px;border-radius:20px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer}
 .pchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
-.pchip .ren{margin-left:5px;opacity:.85;font-weight:400}
+.pchip .ren{margin-left:4px;opacity:.9;font-weight:400;padding:3px 6px;margin-right:-6px;border-radius:12px}
+.pchip .ren:active{background:rgba(255,255,255,.25)}
+.uiprompt-ov{position:fixed;inset:0;background:rgba(40,40,42,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:24px}
+.uiprompt{background:#fff;border-radius:14px;padding:18px;width:100%;max-width:340px;box-shadow:0 12px 40px rgba(0,0,0,.3)}
+.uiprompt-t{font-weight:700;margin-bottom:10px;color:#28282A}
+.uiprompt-in{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:16px;box-sizing:border-box}
+.uiprompt-btns{display:flex;gap:8px;margin-top:14px}
+.uiprompt-btns .btn{flex:1;margin:0}
 .pchip.add{border-style:dashed;color:var(--brand)}
 
 .stat{display:flex;gap:8px;padding:14px 14px 0}
