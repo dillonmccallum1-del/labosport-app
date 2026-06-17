@@ -1262,7 +1262,7 @@ function bind(){
   app.querySelectorAll('[data-pitch]').forEach(e=>e.onclick=()=>{CURP=+e.dataset.pitch;render();});
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
   app.querySelectorAll('[data-addvwc]').forEach(e=>e.onclick=addVwcDepth);
-  app.querySelectorAll('[data-renamepitch]').forEach(e=>e.onclick=ev=>{ev.stopPropagation();renamePitch(+e.currentTarget.dataset.renamepitch);});
+  app.querySelectorAll('[data-renamepitch]').forEach(e=>e.onclick=ev=>{ev.stopPropagation();renamePitch(+e.dataset.renamepitch);});
 
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
   if($('addVenue'))$('addVenue').onclick=addVenueManual;
