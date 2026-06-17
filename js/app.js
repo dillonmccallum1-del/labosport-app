@@ -551,6 +551,21 @@ function mergePhotoArr(a,b){ a=a||[]; b=b||[]; const out=[], seen={};
 // union per-observation test photo maps { position -> [ {id,..} ] }
 function mergeTestPhotos(a,b){ a=a||{}; b=b||{}; const out={};
   new Set(Object.keys(a).concat(Object.keys(b))).forEach(pos=>{ out[pos]=mergePhotoArr(a[pos],b[pos]); }); return out; }
+// Resolve the single shared `positions` array (dot locations) of one test between two copies.
+// Unlike readings/photos this is NOT accumulative — it's one chosen layout — so a fill-blank
+// merge wrongly kept whichever side already had dots and silently dropped a dragged change made
+// on the other device. We instead resolve by a per-field timestamp `posTs` (stamped whenever the
+// layout is edited): the most recently edited layout wins, including a "reset to default" (null).
+// Legacy copies with no posTs fall back to the old prefer-whoever-has-a-custom-layout behaviour.
+function resolvePositions(base, other){
+  const bTs=base.posTs||0, oTs=other.posTs||0;
+  if(oTs>bTs){ base.positions=other.positions; base.posTs=oTs; }
+  else if(bTs>oTs){ /* base edited the layout more recently — keep it */ }
+  else if(!(Array.isArray(base.positions)&&base.positions.length) && Array.isArray(other.positions)&&other.positions.length){
+    base.positions=other.positions;                 // both un-timestamped: keep any custom layout that exists
+  }
+  if(!base.posTs && oTs) base.posTs=oTs;             // carry a stamp forward so future merges compare cleanly
+}
 // fold `other` pitch into `base` pitch, filling blanks only (base wins real conflicts)
 function mergePitchDeep(base, other){
   if(other.name && !base.name) base.name=other.name;
@@ -558,7 +573,7 @@ function mergePitchDeep(base, other){
     Object.keys(other.tests).forEach(k=>{ const ot=other.tests[k]; let bt=base.tests[k];
       if(!bt){ base.tests[k]=ot; return; }
       if(Array.isArray(ot.values)){ bt.values=bt.values||[]; ot.values.forEach((val,vi)=>{ if(val!=null && bt.values[vi]==null) bt.values[vi]=val; }); }
-      if(Array.isArray(ot.positions)&&ot.positions.length&&!(Array.isArray(bt.positions)&&bt.positions.length)) bt.positions=ot.positions;   // keep dragged dot locations through a sync merge
+      resolvePositions(bt, ot);   // dot locations: most-recently-edited layout wins (see resolvePositions)
       if(ot.depth&&!bt.depth) bt.depth=ot.depth;   // VWC chosen depth
       if((!bt.comment||!bt.comment.trim())&&ot.comment) bt.comment=ot.comment;
       if((!bt.method||!bt.method.trim())&&ot.method) bt.method=ot.method;
@@ -639,7 +654,7 @@ function mergeVenueInto(w,l){
   (l.pitches||[]).forEach((lp,pi)=>{ const wp=w.pitches&&w.pitches[pi]; if(!wp) return;
     TESTS.forEach(t=>{ const lt=lp.tests&&lp.tests[t.key], wt=wp.tests&&wp.tests[t.key]; if(!lt||!wt) return;
       (lt.values||[]).forEach((val,vi)=>{ if(val!=null && wt.values[vi]==null) wt.values[vi]=val; });
-      if(Array.isArray(lt.positions)&&lt.positions.length&&!(Array.isArray(wt.positions)&&wt.positions.length)) wt.positions=lt.positions;   // keep dragged dot locations when collapsing duplicates
+      resolvePositions(wt, lt);   // dot locations: most-recently-edited layout wins (see resolvePositions)
       if(lt.depth&&!wt.depth) wt.depth=lt.depth;   // VWC chosen depth
       if((!wt.comment||!wt.comment.trim())&&lt.comment) wt.comment=lt.comment;
       if((!wt.method||!wt.method.trim())&&lt.method) wt.method=lt.method; });
@@ -1176,7 +1191,7 @@ function groupPositions(p,g){
   for(const k of g.members){ const td=p.tests&&p.tests[k]; if(td&&td.positions&&td.positions.length===g.n) return td.positions; }
   return defaultPositions(g.n);
 }
-function setGroupPositions(p,g,pos){ g.members.forEach(k=>{ if(p.tests[k]) p.tests[k].positions = pos ? pos.map(a=>a.slice()) : null; }); }
+function setGroupPositions(p,g,pos){ const ts=Date.now(); g.members.forEach(k=>{ if(p.tests[k]){ p.tests[k].positions = pos ? pos.map(a=>a.slice()) : null; p.tests[k].posTs=ts; } }); }
 function groupDotStyle(p,g,k){ const cnt=g.members.filter(m=>p.tests[m].values[k]!=null).length; const full=cnt===g.members.length, part=cnt>0&&!full;
   return {fill:full?'#1f7a4d':(part?'#bfe0cc':'#fff'), stroke:full?'#155c39':'#c2cad2', text:full?'#fff':'#6b7785'}; }
 function pitchSVGGroup(g){
@@ -1200,7 +1215,7 @@ function bindPitchDrag(){
     const x=PPAD+pos[dragging][0]*(PW-2*PPAD), y=PPAD+pos[dragging][1]*(PH-2*PPAD), g=svg.querySelector('.dot[data-i="'+dragging+'"]');
     g.querySelector('circle').setAttribute('cx',x); g.querySelector('circle').setAttribute('cy',y);
     const tx=g.querySelector('text'); tx.setAttribute('x',x); tx.setAttribute('y',y+3.5); });
-  function end(){ if(dragging!=null){ dragging=null; save(true); } }
+  function end(){ if(dragging!=null){ dragging=null; const td=pitch().tests[key]; if(td) td.posTs=Date.now(); save(true); } }
   svg.addEventListener('pointerup',end); svg.addEventListener('pointercancel',end);
 }
 function bindGroupPitchDrag(g){
@@ -1280,8 +1295,8 @@ function bind(){
   });
   bindPitchDrag();
   if(cur().startsWith('grp:')){ const g=GKEY[cur().split(':')[1]]; if(g) bindGroupEntry(g); }   // combined turf/weed/height entry
-  if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); save(true); render(); toast('Positions randomized'); };
-  if($('resetDots'))$('resetDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=null; save(true); render(); toast('Positions reset to default'); };
+  if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); pitch().tests[key].posTs=Date.now(); save(true); render(); toast('Positions randomized'); };
+  if($('resetDots'))$('resetDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=null; pitch().tests[key].posTs=Date.now(); save(true); render(); toast('Positions reset to default'); };
   if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const tl=pitchTestList(pitch()); const i=tl.findIndex(x=>x.key===key); const nx=tl[i+1]; if(nx)goReplace('test:'+nx.key); };
   if($('vwcDepth'))$('vwcDepth').onchange=()=>{ pitch().tests[cur().split(':')[1]].depth=$('vwcDepth').value; save(true); render(); };   // depth shows in header + venue row title
   if($('rmVwc'))$('rmVwc').onclick=()=>{ const key=cur().split(':')[1], p=pitch(); if(vwcKeys(p).length<=1){toast('Keep at least one depth');return;}
@@ -1708,7 +1723,7 @@ function buildSingleTestMapImage(p,key,v){
 // Smoothing radius as a fraction of map width (≈ one sample spacing). Higher = smoother /
 // less obvious where points were taken; lower = more localised. Sample columns sit ~0.2 of
 // the field apart, so ~0.20–0.30 blends neighbours without washing out real variation.
-const HEAT_SMOOTH=0.26;
+const HEAT_SMOOTH=0.16;
 // Interpolate a quality surface across the pitch from the measured points and colour
 // it on the continuous FIFA ramp (thermal look, but red=unacceptable … green=excellent).
 function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
