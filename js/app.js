@@ -423,7 +423,7 @@ function load(){
   try{const raw=localStorage.getItem(LSKEY); if(raw){state=JSON.parse(raw); if(!state.updatedAt)state.updatedAt=Date.now();
     try{ (state.venues||[]).forEach(v=>{ extractAuditFields(v);
       if((!v.briefImages||!v.briefImages.length)&&window.SEED_BRIEF_IMAGES&&window.SEED_BRIEF_IMAGES[v.name]) v.briefImages=window.SEED_BRIEF_IMAGES[v.name];
-      (v.pitches||[]).forEach(migratePitchTests); }); }catch(e){}   // backfill brief fields/images + migrate test sizes
+      (v.pitches||[]).forEach(migratePitchTests); purgeTombstonedPitches(v); }); }catch(e){}   // backfill brief fields/images + migrate test sizes · drop tombstoned pitches
     try{ migrateBenchmark(state); }catch(e){}                     // fold old global benchmark tab into per-pitch fields
     try{ dedupeVenues(); }catch(e){}                              // collapse any same-name duplicate venues
     initMedia();                                                 // open IndexedDB, migrate old photos out of localStorage, hydrate blobs back in
@@ -631,6 +631,7 @@ function applyRemoteVenue(remote){
   const i=state.venues.findIndex(x=>x.id===remote.id), local=i>=0?state.venues[i]:null;
   (remote.pitches||[]).forEach(migratePitchTests);              // backfill any test keys missing from the synced copy
   if(!local){                                                   // brand-new venue → take it wholesale
+    purgeTombstonedPitches(remote);                             // honour any deletions the sender recorded
     state.venues.push(remote);
     if(window.FB) FB.markSeen(remote);
     save(false,{keepStamp:true,noSync:true,noFB:true});
@@ -638,6 +639,7 @@ function applyRemoteVenue(remote){
     const remoteNewer=(remote._ts||0) > (local._ts||0);
     const base=remoteNewer?remote:local, other=remoteNewer?local:remote;
     mergeVenueDeep(base, other);
+    purgeTombstonedPitches(base);                               // belt-and-braces: never keep a tombstoned pitch
     base._ts=Math.max(remote._ts||0, local._ts||0);
     state.venues[i]=base;
     // Push the union back so every device converges on the merged record. pushChanges compares a
@@ -1414,6 +1416,10 @@ async function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)retu
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
 function editVenue(){ go('venueform',true); }
 function tombstonePitch(v,p){ if(!v||!p||!p.id) return; v.deletedPitches=v.deletedPitches||{}; v.deletedPitches[p.id]=Date.now(); }   // mark so sync/merge won't resurrect it
+// Drop any pitch whose id is tombstoned. Defensive: a teammate on an older app version (or a stale
+// sync echo) can re-add a deleted pitch to v.pitches; this keeps it out of the UI and the report.
+function purgeTombstonedPitches(v){ if(v&&v.deletedPitches&&Array.isArray(v.pitches)) v.pitches=v.pitches.filter(p=>!v.deletedPitches[p.id]); return v; }
+function livePitches(v){ const d=(v&&v.deletedPitches)||{}; return ((v&&v.pitches)||[]).filter(p=>!d[p.id]); }
 function deletePitchAt(i){ const v=venue(); if(!v) return; const p=v.pitches[i]; if(!p) return;
   if(v.pitches.length<=1){ deletePitchOrVenue(); return; }   // last pitch → fall back to venue delete
   if(confirm('Delete pitch “'+p.name+'” and its data?')){ tombstonePitch(v,p); v.pitches.splice(i,1);
@@ -1665,6 +1671,17 @@ function buildReportData(v,p){
   const d={ venue_name:v.name||'', cluster:v.cluster||'Charlotte', address:v.address||'', contact:v.contact||'',
     position:v.position||'', email:v.email||'', phone:v.phone||'', grass:v.grass||'',
     agronomist:state.tester||'', checked_by:'', visit_date:today() };
+  // benchmark section (shown above section 1) — pitch name + this pitch's role vs the venue benchmark
+  d.pitch_name=p.name||'';
+  { const pb=p.bench||{}, multi=(v.pitches||[]).length>1;
+    const bp=(v.pitches||[]).find(x=>x.bench&&x.bench.role==='bench');
+    let txt;
+    if(!multi) txt='Single-pitch venue — no benchmark comparison.';
+    else if(pb.role==='bench') txt='Benchmark pitch for this venue.'+(pb.note?' '+pb.note:'');
+    else if(pb.role){ const lbl={worse:'Worse than',sim:'Similar to',better:'Better than'}[pb.role]||'';
+      txt=lbl+' the venue benchmark'+(bp?(' ('+bp.name+')'):'')+'.'+(pb.note?' '+pb.note:''); }
+    else txt='Benchmark not yet selected for this venue.'+(bp?(' Current benchmark: '+bp.name+'.'):'');
+    d.bench_text=txt; }
   // overall
   const ol=p.overall.level;
   d.overall_label = ol?(RLABEL[ol].toUpperCase()+' RISK'):''; d.overall_score = ol?(ol+'/4'):''; d.overall_comment=p.overall.comment||'';
@@ -2068,7 +2085,8 @@ function applyRiskFills(zip,fills){
 const DOCX_MIME='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 function dataUrlToUint8(dataUrl){ return new Uint8Array(b64ToArrayBuffer(dataUrl)); }
 async function buildVenueWordBlob(v, pitchesArr){
-  const pitches=pitchesArr&&pitchesArr.length?pitchesArr:v.pitches;
+  const td=(v&&v.deletedPitches)||{};
+  const pitches=(pitchesArr&&pitchesArr.length?pitchesArr:v.pitches).filter(p=>!td[p.id]);   // never report a deleted pitch
   const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')');
   const buf=await res.arrayBuffer();
   await ensureReportMedia(pitches);                 // load photo bytes (IndexedDB → cloud) before building, else photos embed blank
@@ -2094,7 +2112,8 @@ async function publishVenueDrive(v){
 }
 async function generateWord(v,pitchesArr){
   if(!window.PizZip||!window.docxtemplater){ toast('⚠ Report engine still loading — try again in a moment'); return; }
-  const pitches=pitchesArr&&pitchesArr.length?pitchesArr:[pitch()];
+  const td=(v&&v.deletedPitches)||{};
+  const pitches=(pitchesArr&&pitchesArr.length?pitchesArr:[pitch()]).filter(p=>p&&!td[p.id]);   // never report a deleted pitch
   toast('<span class="spin"></span> Building Word report'+(pitches.length>1?' ('+pitches.length+' pitches)':'')+'…');
   let buf;
   try{ const res=await fetch('report_template.docx'); if(!res.ok) throw new Error('template not found ('+res.status+')'); buf=await res.arrayBuffer(); }
@@ -2143,10 +2162,15 @@ function reportSheet(v,p){
         return rrow([E(label),st.avg!=null?E(fmt(st.avg,'%')):'—',st.varPct!=null?st.varPct:'—',E(p.tests[key].comment||'')]);}).join('');
   const appendix=AUDIT.map(s=>{const f=p.audit[s[0]].fields;const rows=s[4].map(([label])=>{const val=f[label];return rrow([E(label),val?E(val):'—']);}).join('');
     return `<h3>Appendix ${s[0]} — ${E(s[1])}</h3><table class="t2">${rows}</table>`;}).join('');
-  let bench=''; const pb=p.bench||{};
-  if(pb.role==='bench'){ bench=`<h3>Benchmark selection</h3><p>${pb.note?E(pb.note):'Selected as the benchmark pitch for this venue.'}</p>`; }
-  else if(pb.role){ const bp=(v.pitches||[]).find(x=>x.bench&&x.bench.role==='bench');
-    bench=`<h3>Comparison vs benchmark</h3><p><b>${({worse:'Worse than',sim:'Similar to',better:'Better than'}[pb.role]||'')} benchmark${bp?(' ('+E(bp.name)+')'):''}.</b> ${E(pb.note||'')}</p>`; }
+  // Benchmark section (always shown, above overall) — pitch name + this pitch's role vs the venue benchmark
+  const pb=p.bench||{}, multiP=(v.pitches||[]).length>1, bpW=(v.pitches||[]).find(x=>x.bench&&x.bench.role==='bench');
+  let benchTxt;
+  if(!multiP) benchTxt='Single-pitch venue — no benchmark comparison.';
+  else if(pb.role==='bench') benchTxt='Benchmark pitch for this venue.'+(pb.note?' '+E(pb.note):'');
+  else if(pb.role){ const lbl={worse:'Worse than',sim:'Similar to',better:'Better than'}[pb.role]||'';
+    benchTxt=lbl+' the venue benchmark'+(bpW?(' ('+E(bpW.name)+')'):'')+'.'+(pb.note?' '+E(pb.note):''); }
+  else benchTxt='Benchmark not yet selected for this venue.'+(bpW?(' Current benchmark: '+E(bpW.name)+'.'):'');
+  const bench=`<p><b>Pitch:</b> ${E(p.name)}</p><p>${benchTxt}</p>`;
   return `<div class="sheet">
     <div class="hd"><div class="ttl">PITCH INSPECTION <span class="lb">REPORT</span></div><div class="muted">Labosport Group · ${E(today())}</div></div>
     <div class="grid">
@@ -2200,7 +2224,8 @@ function reportHTML(v,pitches){
   </body></html>`;
 }
 function generatePDF(v,pitchesArr){
-  const pitches=pitchesArr&&pitchesArr.length?pitchesArr:[pitch()];
+  const td=(v&&v.deletedPitches)||{};
+  const pitches=(pitchesArr&&pitchesArr.length?pitchesArr:[pitch()]).filter(p=>p&&!td[p.id]);   // never report a deleted pitch
   const w=window.open('','_blank');
   if(!w){ toast('⚠ Allow pop-ups for PDF, or use the Word report'); return; }
   w.document.write(reportHTML(v,pitches)); w.document.close();
