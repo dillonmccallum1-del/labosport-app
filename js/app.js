@@ -1036,7 +1036,7 @@ function scrResults(){
 function scrPhotos(){
   const p=pitch();
   const items=p.photos.map(ph=>`<div class="photo"><img src="${ph.dataUrl||''}" alt=""><button class="del" data-delphoto="${ph.id}">✕</button></div>`).join('');
-  return `<div class="hint">Add photos with the camera or from your library. The first 6 fill the report's photo grid (Overview, Close up, Photo 3–6). <span class="saved" id="savedFlag">saved ✓</span></div>
+  return `<div class="hint">Add photos with the camera or from your library. Every photo here is included in the report's photo grid (two per row). <span class="saved" id="savedFlag">saved ✓</span></div>
     <div class="card" style="padding:0"><div class="photogrid">${items}<div class="photo-add" id="addPhoto">📷<span>Take photo</span></div></div>
       <div class="field"><label>Additional photos / notes &amp; comments (report)</label><textarea id="photoNotes" placeholder="Notes that appear under the photo grid…">${esc(p.photoNotes||'')}</textarea></div></div>
     <button class="btn ghost" id="addPhotoLib">🖼 Choose from library</button>
@@ -1898,11 +1898,34 @@ async function buildSoilPhotosImage(p){
   }
   return {dataUrl:c.toDataURL('image/jpeg',0.7), w:W, h:H};
 }
+/* Section 4 photo grid: composite EVERY uploaded photo, two per row, into a list of row images.
+   Each row is a separate inline image so Word paginates the set naturally across pages
+   (a single tall composite would get clipped at the page boundary). Returns [{photo_img,w,h}]. */
+async function buildPhotoRowImages(p){
+  const photos=(p.photos||[]).filter(ph=>ph&&ph.dataUrl);
+  const out=[], cols=2, W=1240, gap=24, cellW=Math.floor((W-gap)/cols), cellH=Math.round(cellW*0.72);
+  for(let i=0;i<photos.length;i+=cols){
+    const pair=photos.slice(i,i+cols);
+    const c=document.createElement('canvas'); c.width=W; c.height=cellH; const ctx=c.getContext('2d');
+    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,cellH);
+    for(let j=0;j<pair.length;j++){ const x=j*(cellW+gap), y=0;
+      ctx.fillStyle='#eef1f4'; ctx.fillRect(x,y,cellW,cellH);
+      const im=await loadImage(pair[j].dataUrl);
+      if(im&&im.width){ const ar=im.width/im.height, car=cellW/cellH; let dw,dh,dx,dy;   // contain-fit, centred & clipped
+        if(ar>car){ dh=cellH; dw=dh*ar; dx=x-(dw-cellW)/2; dy=y; } else { dw=cellW; dh=dw/ar; dx=x; dy=y-(dh-cellH)/2; }
+        ctx.save(); ctx.beginPath(); ctx.rect(x,y,cellW,cellH); ctx.clip(); ctx.drawImage(im,dx,dy,dw,dh); ctx.restore(); }
+      ctx.strokeStyle='#c9ccd0'; ctx.lineWidth=1; ctx.strokeRect(x+.5,y+.5,cellW-1,cellH-1); }
+    out.push({ photo_img:c.toDataURL('image/jpeg',0.72), w:W, h:cellH });
+  }
+  return out;
+}
 async function buildPitchReportData(v,p){
   const data=buildReportData(v,p), sizeMap={};
-  for(let i=0;i<6;i++){ const ph=p.photos[i], key='photo'+(i+1);
-    if(ph){ data[key]=ph.dataUrl; sizeMap[ph.dataUrl]=fitBox(ph.w||240,ph.h||160,250,185); }
-    else { data[key]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
+  // Section 4 — include EVERY uploaded photo (was: only the first 6), two per row, looped in the template.
+  try{ const rows=await buildPhotoRowImages(p);
+    rows.forEach(r=>{ sizeMap[r.photo_img]=fitBox(r.w,r.h,470,360); });
+    data.photos_all=rows;
+  }catch(e){ console.error('photos grid failed:',e); data.photos_all=[]; }
   data.photo_notes=p.photoNotes||'';
   try{ const tm=buildTestMapsImage(p,v);
     if(tm){ data.has_test_maps=true; data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
