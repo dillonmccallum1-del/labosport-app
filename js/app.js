@@ -29,6 +29,90 @@ const GROUP_OF = {}; GROUPS.forEach(g=>g.members.forEach(m=>GROUP_OF[m]=g));   /
 const GMETRIC_LABEL = {turf_cover:'Turf cover', weed:'Weed', turf_height:'Height'};
 function metricShort(k){ return GMETRIC_LABEL[k] || (TKEY[k]?TKEY[k].name:k); }
 
+/* ----------------------------- FIFA quality bands ----------------------------- */
+/* 5-level performance scale derived from assets/FIFA_Pitch_Performance_Standards.xlsx.
+   Level → 1 Unacceptable, 2 Poor, 3 Satisfactory, 4 Good, 5 Excellent.
+   Colours are the exact cell fills from that workbook. */
+const QC     = {1:'#E8170C', 2:'#E97132', 3:'#F9CD04', 4:'#92D050', 5:'#00B050'};
+const QSTROKE= {1:'#a01009', 2:'#a44d1f', 3:'#b39504', 4:'#5f9a2e', 5:'#007a37'};   // darker rims for legibility
+const QLABEL = {1:'Unacceptable', 2:'Poor', 3:'Satisfactory', 4:'Good', 5:'Excellent'};
+// Yellow needs dark text; the rest read better with white.
+function qTextColor(level){ return level===3 ? '#28282A' : '#ffffff'; }
+
+// Warm- vs cool-season species keywords (lowercase substrings, incl. common cultivars).
+const WARM_GRASS = ['bermuda','cynodon','tifway','tifgreen','tifsport','tifdwarf','tifgrand','celebration',
+  'latitude 36','northbridge','patriot','princess','riviera','zoysia','zeon','zorro','emerald','meyer',
+  'st. augustine','st augustine','stenotaphrum','centipede','eremochloa','bahia','paspalum','seashore',
+  'kikuyu','pennisetum','cenchrus','buffalo','bouteloua','carpetgrass','axonopus'];
+const COOL_GRASS = ['kentucky blue','poa pratensis','bluegrass','poa trivialis','poa annua','rough blue',
+  'annual blue','ryegrass','rye grass','lolium','tall fescue','fine fescue','red fescue','chewings',
+  'hard fescue','sheep fescue','fescue','festuca','schedonorus','bentgrass','bent grass','agrostis',
+  'creeping bent','colonial bent','velvet bent','orchardgrass'];
+
+// Classify free-text species → 'warm' | 'cool' | null (unknown/ambiguous).
+function classifyGrass(text){
+  const s=(text||'').toLowerCase(); if(!s.trim()) return null;
+  let warm=0, cool=0;
+  WARM_GRASS.forEach(w=>{ if(s.indexOf(w)>=0) warm++; });
+  COOL_GRASS.forEach(w=>{ if(s.indexOf(w)>=0) cool++; });
+  if(warm>cool) return 'warm';
+  if(cool>warm) return 'cool';
+  return null;
+}
+// Pull the richest grass text available for a pitch (venue field + audit section E species).
+function pitchGrass(v,p){
+  const eF=(p&&p.audit&&p.audit.E&&p.audit.E.fields)||{};
+  return classifyGrass([(v&&v.grass)||'', eF['Grass species / turf type(s)']||''].join(' '));
+}
+// Hybrid / reinforced surface? (uses audit section B reinforcement question + details text)
+function pitchHybrid(v,p){
+  const bF=(p&&p.audit&&p.audit.B&&p.audit.B.fields)||{};
+  if(((bF['Reinforcement installed?']||'').toLowerCase())==='yes') return true;
+  return /hybrid|carpet|stitch|fibre|fiber/.test((bF['Reinforcement details']||'').toLowerCase());
+}
+
+// Segment helper: ascending [upperBound, level] pairs; returns level for the first bound v is below.
+function segLevel(v, segs){ for(const [b,l] of segs){ if(v<b) return l; } return segs[segs.length-1][1]; }
+
+// Return quality level 1-5 for a metric value, or null if not gradable (grass unknown, etc.).
+function fifaLevel(metricKey, v, grass, hybrid){
+  if(v==null||isNaN(v)) return null;
+  switch(metricKey){
+    // ---- grass-independent ----
+    case 'traction':   // Rotational Resistance (Nm); note: source table defines no "Good" band
+      return segLevel(v,[[15,1],[20,2],[25,3],[50,5],[55,3],[60,2],[Infinity,1]]);
+    case 'clegg':      // Surface Hardness (g)
+      return segLevel(v,[[40,1],[50,2],[60,3],[70,4],[85,5],[90,4],[95,3],[100,2],[Infinity,1]]);
+    case 'infil':      // Infiltration rate (mm/h), higher better
+      return v<40?1 : v<=50?2 : v<=100?3 : v<=150?4 : 5;
+    case 'turf_cover': // Turf Coverage (%), higher better
+      return v<75?1 : v<85?2 : v<90?3 : v<95?4 : 5;
+    case 'weed':       // Weed Content (%), lower better
+      return v<=0.10?5 : v<=0.50?4 : v<=1.00?3 : v<=2.50?2 : 1;
+    // ---- grass-dependent ----
+    case 'ndvi':       // Turf health (NDVI), higher better
+      if(grass==='warm') return v<0.30?1 : v<0.60?2 : v<0.65?3 : v<0.70?4 : 5;
+      if(grass==='cool') return v<0.60?1 : v<0.70?2 : v<0.75?3 : v<0.80?4 : 5;
+      return null;
+    case 'soil':       // Root Depth (mm); cool & warm share a scale, hybrid carpet differs
+      if(hybrid) return v<30?1 : v<40?2 : v<45?3 : v<50?4 : 5;
+      return v<50?1 : v<70?2 : v<85?3 : v<100?4 : 5;
+    case 'turf_height':// Mowing Height (mm)
+      if(grass==='warm') return segLevel(v,[[15,1],[18,2],[20,4],[25.05,5],[28.05,4],[35.05,3],[45.05,2],[Infinity,1]]);
+      if(grass==='cool') return segLevel(v,[[15,1],[18,2],[20,3],[22,4],[28.05,5],[35.05,4],[45.05,3],[55.05,2],[Infinity,1]]);
+      return null;
+    case 'moisture': case 'moisture76':   // Volumetric Water Content (%)
+      if(grass==='warm') return segLevel(v,[[5,1],[10,2],[12,3],[15,4],[20.05,5],[25.05,4],[30.05,3],[35.05,2],[Infinity,1]]);
+      if(grass==='cool') return segLevel(v,[[10,1],[15,2],[20,3],[25,4],[30.05,5],[Infinity,1]]);
+      return null;
+    default: return null;
+  }
+}
+// One-stop: level for a value at a pitch (resolves grass/hybrid from venue+pitch).
+function fifaLevelFor(v,p,metricKey,val){
+  return fifaLevel(metricKey, val, pitchGrass(v,p), pitchHybrid(v,p));
+}
+
 // audit sections A-H: [code, title, hint, briefParam, fields]
 const YN = 'yn', TXT='text', AREA='area', NUM='num';
 const AUDIT = [
@@ -385,6 +469,7 @@ function mergePitchDeep(base, other){
     Object.keys(other.tests).forEach(k=>{ const ot=other.tests[k]; let bt=base.tests[k];
       if(!bt){ base.tests[k]=ot; return; }
       if(Array.isArray(ot.values)){ bt.values=bt.values||[]; ot.values.forEach((val,vi)=>{ if(val!=null && bt.values[vi]==null) bt.values[vi]=val; }); }
+      if(Array.isArray(ot.positions)&&ot.positions.length&&!(Array.isArray(bt.positions)&&bt.positions.length)) bt.positions=ot.positions;   // keep dragged dot locations through a sync merge
       if((!bt.comment||!bt.comment.trim())&&ot.comment) bt.comment=ot.comment;
       if((!bt.method||!bt.method.trim())&&ot.method) bt.method=ot.method;
       bt.photos=mergeTestPhotos(bt.photos, ot.photos); }); }
@@ -463,6 +548,7 @@ function mergeVenueInto(w,l){
   (l.pitches||[]).forEach((lp,pi)=>{ const wp=w.pitches&&w.pitches[pi]; if(!wp) return;
     TESTS.forEach(t=>{ const lt=lp.tests&&lp.tests[t.key], wt=wp.tests&&wp.tests[t.key]; if(!lt||!wt) return;
       (lt.values||[]).forEach((val,vi)=>{ if(val!=null && wt.values[vi]==null) wt.values[vi]=val; });
+      if(Array.isArray(lt.positions)&&lt.positions.length&&!(Array.isArray(wt.positions)&&wt.positions.length)) wt.positions=lt.positions;   // keep dragged dot locations when collapsing duplicates
       if((!wt.comment||!wt.comment.trim())&&lt.comment) wt.comment=lt.comment;
       if((!wt.method||!wt.method.trim())&&lt.method) wt.method=lt.method; });
     AUDIT.forEach(a=>{ const lf=lp.audit&&lp.audit[a[0]]&&lp.audit[a[0]].fields, wf=wp.audit&&wp.audit[a[0]]&&wp.audit[a[0]].fields; if(!lf||!wf) return;
@@ -567,7 +653,7 @@ function scrHome(){
 function scrVenue(){
   const v=venue(), p=pitch();
   const wr=v.wr?`<div class="note wr"><b>World Rugby (confidential):</b> ${esc(v.wr)}</div>`:'';
-  const chips=v.pitches.length>1?`<div class="pchips">${v.pitches.map((pp,i)=>`<div class="pchip ${i===CURP?'on':''}" data-pitch="${i}">${esc(pp.name)}</div>`).join('')}<div class="pchip" data-addpitch="1">+ pitch</div></div>`:'';
+  const chips=`<div class="pchips">${v.pitches.map((pp,i)=>`<div class="pchip ${i===CURP?'on':''}" data-pitch="${i}">${esc(pp.name)}${i===CURP?` <span class="ren" data-renamepitch="${i}" title="Rename pitch">✎</span>`:''}</div>`).join('')}<div class="pchip add" data-addpitch="1">+ pitch</div></div>`;
   const af=v.briefLoaded?' af':'';
   const head=`<div class="card">
     <div class="kv"><span class="k">Venue</span><span class="v${af}">${esc(v.name)}</span></div>
@@ -930,14 +1016,30 @@ function pitchFieldInner(){
     ${verticals}${horizontals}${posts}`;
 }
 function pitchSVG(key){
-  const p=pitch(), pos=testPositions(p,key), vals=p.tests[key].values;
+  const p=pitch(), v=venue(), pos=testPositions(p,key), vals=p.tests[key].values;
+  const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
   const dots=pos.map((pp,k)=>{const x=PPAD+pp[0]*(PW-2*PPAD),y=PPAD+pp[1]*(PH-2*PPAD);const done=vals[k]!=null;
     const lbl=done?shortNum(vals[k]):String(k+1);
-    return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${done?'#1f7a4d':'#fff'}" stroke="${done?'#155c39':'#c2cad2'}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="${dotFontSVG(lbl)}" font-weight="700" text-anchor="middle" fill="${done?'#fff':'#6b7785'}">${esc(lbl)}</text></g>`;}).join('');
+    const lv=done?fifaLevel(key,vals[k],grass,hybrid):null;   // FIFA band → colour; null = neutral
+    const fill=done?(lv?QC[lv]:'#1f7a4d'):'#fff', stroke=done?(lv?QSTROKE[lv]:'#155c39'):'#c2cad2', txt=done?(lv?qTextColor(lv):'#fff'):'#6b7785';
+    return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="${dotFontSVG(lbl)}" font-weight="700" text-anchor="middle" fill="${txt}">${esc(lbl)}</text></g>`;}).join('');
   return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#23823f;border-radius:12px;border:1px solid #1c6e34">
     ${pitchFieldInner()}${dots}</svg></div>
     <div class="draghint">Drag any numbered dot to the spot you actually tested</div>
+    ${qualityLegend(key,grass)}
     <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="randDots">🎲 Randomize</button> <button class="btn sm ghost" id="resetDots">↺ Reset to default</button></div>`;
+}
+/* small colour key under a single-metric map; notes grass class for grass-dependent metrics */
+const GRASS_DEP={ndvi:1,soil:1,turf_height:1,moisture:1,moisture76:1};
+function qualityLegend(key,grass){
+  if(!TKEY[key]) return '';
+  const sw=l=>`<span style="display:inline-flex;align-items:center;gap:3px;margin:0 5px 2px 0"><span style="width:11px;height:11px;border-radius:50%;background:${QC[l]};border:1px solid ${QSTROKE[l]};display:inline-block"></span>${QLABEL[l]}</span>`;
+  let note='';
+  if(GRASS_DEP[key]){
+    note = grass ? ` · ${grass}-season scale` : ` · <b style="color:#b00">set grass species to colour these</b>`;
+    if(key==='soil') note = (grass||pitchHybrid(venue(),pitch())) ? ' · root-depth scale' : note;
+  }
+  return `<div class="qlegend" style="font-size:11px;color:#5b6570;text-align:center;margin:2px 0 6px;line-height:1.5">FIFA quality: ${[1,2,3,4,5].map(sw).join('')}<span style="opacity:.8">${note}</span></div>`;
 }
 
 /* ---- grouped tests: shared positions across all members ---- */
@@ -1015,6 +1117,7 @@ function bind(){
   app.querySelectorAll('[data-back]').forEach(e=>e.onclick=back);
   app.querySelectorAll('[data-pitch]').forEach(e=>e.onclick=()=>{CURP=+e.dataset.pitch;render();});
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
+  app.querySelectorAll('[data-renamepitch]').forEach(e=>e.onclick=ev=>{ev.stopPropagation();renamePitch(+e.currentTarget.dataset.renamepitch);});
 
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
   if($('addVenue'))$('addVenue').onclick=addVenueManual;
@@ -1033,10 +1136,11 @@ function bind(){
       const val=raw===''?null:parseFloat(raw.replace(',','.')); pitch().tests[key].values[i]=(val==null||isNaN(val))?null:val;
       const stored=pitch().tests[key].values[i];
       inp.closest('.posbox').classList.toggle('done',stored!=null);
-      const g=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // live-update the map dot to show the value
+      const g=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // live-update the map dot to show the value + FIFA colour
       if(g){ const done=stored!=null, lbl=done?shortNum(stored):String(i+1), tx=g.querySelector('text');
-        g.querySelector('circle').setAttribute('fill',done?'#1f7a4d':'#fff'); g.querySelector('circle').setAttribute('stroke',done?'#155c39':'#c2cad2');
-        tx.textContent=lbl; tx.setAttribute('fill',done?'#fff':'#6b7785'); tx.setAttribute('font-size',dotFontSVG(lbl)); }
+        const lv=done?fifaLevelFor(venue(),pitch(),key,stored):null;
+        g.querySelector('circle').setAttribute('fill',done?(lv?QC[lv]:'#1f7a4d'):'#fff'); g.querySelector('circle').setAttribute('stroke',done?(lv?QSTROKE[lv]:'#155c39'):'#c2cad2');
+        tx.textContent=lbl; tx.setAttribute('fill',done?(lv?qTextColor(lv):'#fff'):'#6b7785'); tx.setAttribute('font-size',dotFontSVG(lbl)); }
       const st=stats(pitch().tests[key].values);
       $('tAvg').textContent=st.avg!=null?fmt(st.avg,''):'—'; $('tVar').textContent=st.varPct!=null?st.varPct+'%':'—'; $('tDone').textContent=st.done+'/'+TKEY[key].n;
       save(true);
@@ -1117,6 +1221,7 @@ function bind(){
 
 /* ----------------------------- actions ----------------------------- */
 function addPitch(){ const name=prompt('Name for the new pitch:','Pitch '+(venue().pitches.length+1)); if(!name)return; venue().pitches.push(newPitch(name.trim())); CURP=venue().pitches.length-1; save(); render(); }
+function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=prompt('Rename pitch:',p.name); if(name===null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
 function editVenue(){ go('venueform',true); }
 function deletePitchOrVenue(){ const v=venue();
@@ -1386,23 +1491,42 @@ const WHITE_PX='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7lj
 function b64ToArrayBuffer(dataUrl){ const i=dataUrl.indexOf('base64,'); const bin=atob(dataUrl.slice(i+7)); const len=bin.length; const u=new Uint8Array(len); for(let j=0;j<len;j++)u[j]=bin.charCodeAt(j); return u.buffer; }
 function fitBox(w,h,maxW,maxH){ const s=Math.min(maxW/w,maxH/h); return [Math.round(w*s),Math.round(h*s)]; }
 
-/* render one test's pitch map onto a canvas region */
-function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key){
-  const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[], pad=w*0.04;
-  ctx.fillStyle='#cfe8d6'; ctx.fillRect(ox+pad,oy+pad,w-2*pad,h-2*pad);
-  ctx.strokeStyle='#9cc9ad'; ctx.lineWidth=2; ctx.strokeRect(ox+pad,oy+pad,w-2*pad,h-2*pad);
-  ctx.beginPath(); ctx.moveTo(ox+w/2,oy+pad); ctx.lineTo(ox+w/2,oy+h-pad); ctx.stroke();
-  ctx.setLineDash([5,5]); [0.22,0.78].forEach(fx=>{const x=ox+pad+(w-2*pad)*fx; ctx.beginPath(); ctx.moveTo(x,oy+pad); ctx.lineTo(x,oy+h-pad); ctx.stroke();}); ctx.setLineDash([]);
-  const r=Math.max(9,w*0.028);
+/* render one test's pitch map onto a canvas region — mirrors the in-app pitch design
+   (pitchFieldInner + FIFA-coloured dots) so the report maps look identical to the app's.
+   The app SVG uses a PW×PH viewBox; we fit it uniformly (keeping the rugby-field
+   proportions) into the box and centre it, then draw every marking/dot in viewBox units × s. */
+function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v){
+  const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[];
+  const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
+  const s=Math.min(w/PW, h/PH), fw=PW*s, fh=PH*s, bx=ox+(w-fw)/2, by=oy+(h-fh)/2;
+  const TX=cx=>bx+cx*s, TY=cy=>by+cy*s;                          // viewBox coord → canvas
+  const ix=PPAD, iy=PPAD, iw=PW-2*PPAD, ih=PH-2*PPAD;
+  const X=f=>ix+f*iw, Y=f=>iy+f*ih;
+  ctx.fillStyle='#23823f'; ctx.fillRect(TX(0),TY(0),fw,fh);                   // svg background
+  ctx.fillStyle='#36a058'; ctx.fillRect(TX(ix),TY(iy),iw*s,ih*s);            // inner field
+  ctx.fillStyle='#2f8f4e';                                                   // in-goal end zones
+  ctx.fillRect(TX(2),TY(iy),(PPAD-2)*s,ih*s); ctx.fillRect(TX(PW-PPAD),TY(iy),(PPAD-2)*s,ih*s);
+  ctx.strokeStyle='#ffffff';
+  const line=(x1,y1,x2,y2,lw,dash)=>{ ctx.lineWidth=lw*s; ctx.setLineDash((dash||[]).map(d=>d*s));
+    ctx.beginPath(); ctx.moveTo(TX(x1),TY(y1)); ctx.lineTo(TX(x2),TY(y2)); ctx.stroke(); ctx.setLineDash([]); };
+  line(2,iy,2,iy+ih,1.2); line(PW-2,iy,PW-2,iy+ih,1.2);                      // end-zone outer lines
+  ctx.lineWidth=1.8*s; ctx.setLineDash([]); ctx.strokeRect(TX(ix),TY(iy),iw*s,ih*s);   // field border
+  [[0,0],[0.22,0],[0.40,1],[0.5,0],[0.60,1],[0.78,0],[1,0]].forEach(([f,d])=>          // try/22m solid · 10m/halfway dashed
+    line(X(f),Y(0),X(f),Y(1), d?1.2:1.6, d?[4,4]:null));
+  ctx.globalAlpha=0.85; [0.07,0.21,0.79,0.93].forEach(f=>line(X(0.02),Y(f),X(0.98),Y(f),1,[5,6])); ctx.globalAlpha=1;  // 5m/15m
+  [X(0),X(1)].forEach(gx=>{ line(gx,Y(.40),gx,Y(.60),2); const dir=(gx===X(0))?-5:5;  // goal posts
+    line(gx,Y(.40),gx+dir,Y(.40),2); line(gx,Y(.60),gx+dir,Y(.60),2); });
+  const r=11*s;
   pos.forEach((pp,k)=>{ const done=vals[k]!=null;
-    if(!done) return;                                   // report maps: show only tested positions (green dots)
-    const x=ox+pad+pp[0]*(w-2*pad), y=oy+pad+pp[1]*(h-2*pad);
-    const lbl=shortNum(vals[k]), L=lbl.length;
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle='#1f7a4d'; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle='#155c39'; ctx.stroke();
-    ctx.fillStyle='#fff'; ctx.font='bold '+Math.round(r*(L<=2?1.05:(L===3?0.82:0.68)))+'px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl,x,y); });
+    const x=TX(ix+pp[0]*iw), y=TY(iy+pp[1]*ih);
+    const lbl=done?shortNum(vals[k]):String(k+1);
+    const lv=done?fifaLevel(key,vals[k],grass,hybrid):null;     // FIFA band → colour; null = neutral / pending
+    const fill=done?(lv?QC[lv]:'#1f7a4d'):'#ffffff', stroke=done?(lv?QSTROKE[lv]:'#155c39'):'#c2cad2', txt=done?(lv?qTextColor(lv):'#ffffff'):'#6b7785';
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=fill; ctx.fill(); ctx.lineWidth=1.5*s; ctx.strokeStyle=stroke; ctx.stroke();
+    ctx.fillStyle=txt; ctx.font='bold '+(dotFontSVG(lbl)*s)+'px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl,x,y); });
 }
 /* composite image of all test maps for the report appendix; returns {dataUrl,w,h} */
-function buildTestMapsImage(p){
+function buildTestMapsImage(p,v){
   // Only publish maps for metrics that actually have a reading. If nothing was
   // measured anywhere, return null so the whole appendix is omitted.
   const shown=TESTS.filter(t=>stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]).done>0);
@@ -1415,13 +1539,13 @@ function buildTestMapsImage(p){
     const st=stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]);
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
     ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
-    drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key);
+    drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key,v);
   });
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 
 /* single test-location map (one parameter) for Section 3 — title + pitch, returns {dataUrl,w,h} */
-function buildSingleTestMapImage(p,key){
+function buildSingleTestMapImage(p,key,v){
   const t=TKEY[key]; const cellW=620, mapH=300, titleH=40, pad=14;
   const W=cellW+pad*2, H=mapH+titleH+pad*2;
   const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
@@ -1429,7 +1553,7 @@ function buildSingleTestMapImage(p,key){
   const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
   ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
   ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
-  drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key);
+  drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v);
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 /* Section 3 maps: which parameters, and the device-named caption beneath each. Edit captions here. */
@@ -1474,13 +1598,17 @@ async function buildPitchReportData(v,p){
     if(ph){ data[key]=ph.dataUrl; sizeMap[ph.dataUrl]=fitBox(ph.w||240,ph.h||160,250,185); }
     else { data[key]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
   data.photo_notes=p.photoNotes||'';
-  try{ const tm=buildTestMapsImage(p);
+  try{ const tm=buildTestMapsImage(p,v);
     if(tm){ data.has_test_maps=true; data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
     else { data.has_test_maps=false; data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
   catch(e){ console.error('test-maps image failed:',e); data.has_test_maps=false; data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
   // Section 3 — individual location maps for shear, compaction (clegg) and traction, each with a device caption.
+  // Skip a map entirely (template drops the {#has_KEY}…{/has_KEY} section) when that metric has no readings.
   SEC3_MAPS.forEach(([key,imgTag,capTag,caption])=>{
-    try{ const m=buildSingleTestMapImage(p,key); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h,440,430); }
+    const has=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]).done>0;
+    data['has_'+key]=has;
+    if(!has){ data[imgTag]=WHITE_PX; data[capTag]=''; return; }   // no data → section removed, tags still defined
+    try{ const m=buildSingleTestMapImage(p,key,v); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h,440,430); }
     catch(e){ console.error('section-3 map failed ('+key+'):',e); data[imgTag]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
     data[capTag]=caption;
   });
@@ -1641,15 +1769,15 @@ function reportSheet(v,p){
         <div class="kv"><span class="k">Grass type</span><span>${E(v.grass)||'—'}</span></div>
         <div class="kv"><span class="k">Agronomist</span><span>${E(state.tester)||'—'}</span></div></div>
     </div>
-    <h2>1 · Overall assessment — venue</h2>
+    ${bench?'<h2>1 · Benchmark &amp; comparison</h2>'+bench:''}
+    <h2>${bench?2:1} · Overall assessment — ${E(p.name)}</h2>
     <p><span class="rate">${ol?E(RLABEL[ol].toUpperCase()+' RISK · '+ol+'/4'):'NOT RATED'}</span></p>
     <p>${E(p.overall.comment)||'<span class="muted">No overall comment recorded.</span>'}</p>
-    <h2>2 · Detailed risk assessment by parameter</h2>
+    <h2>${bench?3:2} · Detailed risk assessment by parameter</h2>
     <table><tr><td style="${riskCellStyle(1)}">Low · 1</td><td style="${riskCellStyle(2)}">Moderate · 2</td><td style="${riskCellStyle(3)}">High · 3</td><td style="${riskCellStyle(4)}">Critical · 4</td></tr></table>
     <table><tr><th>Parameter</th><th>Level of risk</th><th>Score</th></tr>${riskRows}</table>
-    <h2>3 · Results for pitch</h2>
+    <h2>${bench?4:3} · Results for pitch</h2>
     <table><tr><th>Parameter</th><th>Average</th><th>Max variance (%)</th><th>Comments</th></tr>${resRows}</table>
-    ${bench?'<h2>Benchmark & comparison</h2>'+bench:''}
     <h2>Appendix · Venue audit</h2>${appendix}
   </div>`;
 }
