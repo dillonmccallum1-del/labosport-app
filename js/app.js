@@ -14,10 +14,32 @@ const TESTS = [
   {key:'ndvi',       name:'Turf health (NDVI)',           n:25, unit:'',     pri:false},
   {key:'clegg',      name:'Clegg impact (compaction)',    n:25, unit:'g',    pri:true},
   {key:'traction',   name:'Surface traction / 19 mm stud',n:25, unit:'Nm',   pri:true},
-  {key:'moisture',   name:'Soil moisture — 38 mm (1.5 in)',n:25, unit:'%',   pri:true},
-  {key:'moisture76', name:'Soil moisture — 76 mm (3 in)', n:25, unit:'%',    pri:true},
+  // VWC (soil moisture) — a POOL of preloaded depth slots. Each is a normal 25-position test with
+  // its own selectable depth; only the slots in p.vwc are "active" (shown + reported). See VWC_POOL.
+  {key:'moisture',  name:'Soil moisture (VWC)', n:25, unit:'%', pri:true, depthSel:true},
+  {key:'moisture2', name:'Soil moisture (VWC)', n:25, unit:'%', pri:true, depthSel:true},
+  {key:'moisture3', name:'Soil moisture (VWC)', n:25, unit:'%', pri:false,depthSel:true},
+  {key:'moisture4', name:'Soil moisture (VWC)', n:25, unit:'%', pri:false,depthSel:true},
 ];
+// Selectable measurement depths for the VWC test; stored per slot on p.tests.<key>.depth.
+const VWC_DEPTHS=['3.8 cm','7.6 cm','12.2 cm'];
+const VWC_POOL=['moisture','moisture2','moisture3','moisture4'];       // available depth slots (cap = 4)
+const VWC_DEFAULT_ACTIVE=['moisture','moisture2'];                     // two preloaded by default
+const VWC_DEFAULT_DEPTH={moisture:'3.8 cm',moisture2:'7.6 cm',moisture3:'12.2 cm',moisture4:'7.6 cm'};
 const TKEY = Object.fromEntries(TESTS.map(t=>[t.key,t]));
+// The active VWC slot keys for a pitch (initialises p.vwc on first read; includes any slot with data).
+function vwcKeys(p){
+  if(!p) return VWC_DEFAULT_ACTIVE.slice();
+  let a = (Array.isArray(p.vwc)&&p.vwc.length) ? p.vwc.filter(k=>VWC_POOL.includes(k)) : VWC_DEFAULT_ACTIVE.slice();
+  VWC_POOL.forEach(k=>{ if(!a.includes(k) && p.tests&&p.tests[k] && stats(p.tests[k].values).done>0) a.push(k); });
+  p.vwc=a; return a;
+}
+// Per-pitch ordered test list: the VWC pool collapsed to the pitch's active depth slots.
+function pitchTestList(p){ const out=[]; let vwcDone=false;
+  TESTS.forEach(t=>{ if(t.depthSel){ if(vwcDone) return; vwcDone=true; vwcKeys(p).forEach(k=>out.push(TKEY[k])); return; } out.push(t); });
+  return out; }
+// Display name for a test on a pitch — VWC slots append their chosen depth.
+function testDisplayName(p,key){ const t=TKEY[key]; const d=t&&t.depthSel&&p.tests[key]&&p.tests[key].depth; return (t?t.name:key)+(d?' — '+d:''); }
 
 // Grouped tests: several metrics recorded at the SAME shared positions, entered together on one screen.
 // Data still lives in each member's own tests[key] bucket, so reports/CSV/results are unchanged.
@@ -77,6 +99,7 @@ function segLevel(v, segs){ for(const [b,l] of segs){ if(v<b) return l; } return
 // Return quality level 1-5 for a metric value, or null if not gradable (grass unknown, etc.).
 function fifaLevel(metricKey, v, grass, hybrid){
   if(v==null||isNaN(v)) return null;
+  if(/^moisture\d*$/.test(metricKey)) metricKey='moisture';   // all VWC depth slots share the moisture band scale
   switch(metricKey){
     // ---- grass-independent ----
     case 'traction':   // Rotational Resistance (Nm); note: source table defines no "Good" band
@@ -112,6 +135,52 @@ function fifaLevel(metricKey, v, grass, hybrid){
 function fifaLevelFor(v,p,metricKey,val){
   return fifaLevel(metricKey, val, pitchGrass(v,p), pitchHybrid(v,p));
 }
+
+/* --- continuous quality score (for smooth heat maps) --- */
+// Piecewise-linear value→quality knots. q runs 1..5; band edges sit on x.5, band
+// centres on the integer level, so two-sided metrics peak in the middle and fall
+// off both ways. Clamped at the ends.
+const QKNOTS = {
+  clegg:           [[30,1],[40,1.5],[50,2.5],[60,3.5],[70,4.5],[77.5,5],[85,4.5],[90,3.5],[95,2.5],[100,1.5],[110,1]],
+  traction:        [[10,1],[15,1.5],[20,2.5],[25,4],[37.5,5],[50,4],[55,2.5],[60,1.5],[65,1]],   // note: no "Good" band in source
+  infil:           [[30,1],[40,1.5],[50,2.5],[100,3.5],[150,4.5],[175,5]],
+  turf_cover:      [[70,1],[75,1.5],[85,2.5],[90,3.5],[95,4.5],[100,5]],
+  weed:            [[0,5],[0.1,4.5],[0.5,3.5],[1,2.5],[2.5,1.5],[3.5,1]],
+  ndvi_cool:       [[0.5,1],[0.6,1.5],[0.7,2.5],[0.75,3.5],[0.8,4.5],[0.85,5]],
+  ndvi_warm:       [[0.2,1],[0.3,1.5],[0.6,2.5],[0.65,3.5],[0.7,4.5],[0.78,5]],
+  soil:            [[40,1],[50,1.5],[70,2.5],[85,3.5],[100,4.5],[115,5]],
+  soil_hybrid:     [[25,1],[30,1.5],[40,2.5],[45,3.5],[50,4.5],[57,5]],
+  turf_height_cool:[[13,1],[15,1.5],[18,2.5],[20,3.5],[22,4.5],[25,5],[28,4.5],[35,3.5],[45,2.5],[55,1.5],[58,1]],
+  turf_height_warm:[[13,1],[15,1.5],[18,3],[20,4.5],[22.5,5],[25,4.5],[28,3.5],[35,2.5],[45,1.5],[48,1]],   // source table scrambled
+  moisture_cool:   [[8,1],[10,1.5],[15,2.5],[20,3.5],[25,4.5],[30,5],[30.01,1],[60,1]],   // no upper shoulder in source → >30 treated unacceptable
+  moisture_warm:   [[3,1],[5,1.5],[10,2.5],[12,3.5],[15,4.5],[17.5,5],[20,4.5],[25,3.5],[30,2.5],[35,1.5],[38,1]],
+};
+function qKnotsFor(metricKey, grass, hybrid){
+  switch(metricKey){
+    case 'ndvi':        return grass==='warm'?QKNOTS.ndvi_warm : grass==='cool'?QKNOTS.ndvi_cool : null;
+    case 'soil':        return hybrid?QKNOTS.soil_hybrid:QKNOTS.soil;
+    case 'turf_height': return grass==='warm'?QKNOTS.turf_height_warm : grass==='cool'?QKNOTS.turf_height_cool : null;
+    case 'moisture': case 'moisture76':
+                        return grass==='warm'?QKNOTS.moisture_warm : grass==='cool'?QKNOTS.moisture_cool : null;
+    default:            return QKNOTS[metricKey]||null;
+  }
+}
+function lerpKnots(v,k){
+  if(v<=k[0][0]) return k[0][1];
+  for(let i=1;i<k.length;i++){ if(v<=k[i][0]){ const [x0,y0]=k[i-1],[x1,y1]=k[i]; return y0+(y1-y0)*(v-x0)/(x1-x0); } }
+  return k[k.length-1][1];
+}
+function fifaScore(metricKey, v, grass, hybrid){
+  if(v==null||isNaN(v)) return null;
+  const k=qKnotsFor(metricKey,grass,hybrid); if(!k) return null;
+  return Math.max(1,Math.min(5,lerpKnots(v,k)));
+}
+// Smooth colour ramp through the 5 FIFA stops for a fractional quality q∈[1,5].
+function hex2rgb(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
+const QC_RGB={1:hex2rgb(QC[1]),2:hex2rgb(QC[2]),3:hex2rgb(QC[3]),4:hex2rgb(QC[4]),5:hex2rgb(QC[5])};
+function qColorRGB(q){ q=Math.max(1,Math.min(5,q)); const lo=Math.floor(q); if(lo>=5) return QC_RGB[5];
+  const f=q-lo, a=QC_RGB[lo], b=QC_RGB[lo+1];
+  return [Math.round(a[0]+(b[0]-a[0])*f), Math.round(a[1]+(b[1]-a[1])*f), Math.round(a[2]+(b[2]-a[2])*f)]; }
 
 // audit sections A-H: [code, title, hint, briefParam, fields]
 const YN = 'yn', TXT='text', AREA='area', NUM='num';
@@ -199,10 +268,10 @@ function uid(){return 'id'+Math.random().toString(36).slice(2,9);}
 function nameKey(s){return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');}
 function seedId(name){return 'seed_'+nameKey(name);}   // stable id so re-seeding reconciles instead of duplicating
 function newPitch(name){
-  const tests={}; TESTS.forEach(t=>tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}});
+  const tests={}; TESTS.forEach(t=>{ tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; if(t.depthSel) tests[t.key].depth=VWC_DEFAULT_DEPTH[t.key]||VWC_DEPTHS[0]; });
   const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
   const risk={}; RISK.forEach(r=>risk[r[0]]=0);
-  return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},bench:{role:'',note:''},photos:[],photoNotes:''};
+  return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},bench:{role:'',note:''},photos:[],photoNotes:'',vwc:VWC_DEFAULT_ACTIVE.slice()};
 }
 function venueFromSeed(s){
   const v={id:seedId(s.name),name:s.name,alias:s.alias,address:s.address,contact:s.contact,position:s.position,
@@ -294,7 +363,23 @@ function migratePitchTests(p){
     if(!td){ td=p.tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; }   // add tests introduced in a newer version (e.g. moisture76)
     if(!Array.isArray(td.values)) td.values=Array(t.n).fill(null);
     if(td.values.length!==t.n){ const nv=Array(t.n).fill(null); for(let i=0;i<Math.min(td.values.length,t.n);i++)nv[i]=td.values[i]; td.values=nv; td.positions=null; }
-    if(!td.photos) td.photos={}; });
+    if(!td.photos) td.photos={};
+    if(t.depthSel && td.depth==null) td.depth=VWC_DEFAULT_DEPTH[t.key]||VWC_DEPTHS[0]; });   // default VWC depth per slot
+  // One-time: fold legacy 76 mm readings (retired 'moisture76' test) into the new 7.6 cm slot (moisture2),
+  // so the second depth's data isn't orphaned. Non-destructive: only fills moisture2 while it's still empty.
+  if(!p._vwc76Migrated){
+    const old=p.tests.moisture76, m2=p.tests.moisture2;
+    if(old && Array.isArray(old.values) && stats(old.values).done>0 && m2 && stats(m2.values).done===0){
+      m2.values=old.values.slice();
+      if(Array.isArray(old.positions)&&old.positions.length) m2.positions=old.positions.map(a=>a.slice());
+      if(old.comment) m2.comment=old.comment;
+      if(old.method) m2.method=old.method;
+      if(old.photos) m2.photos=old.photos;
+      m2.depth='7.6 cm';
+    }
+    p._vwc76Migrated=true;
+  }
+  vwcKeys(p);   // initialise p.vwc (active depth slots) — keeps two preloaded + any slot that has data
   return p;
 }
 // One-time: fold the old global state.benchmark (single benchmark tab across all
@@ -470,9 +555,11 @@ function mergePitchDeep(base, other){
       if(!bt){ base.tests[k]=ot; return; }
       if(Array.isArray(ot.values)){ bt.values=bt.values||[]; ot.values.forEach((val,vi)=>{ if(val!=null && bt.values[vi]==null) bt.values[vi]=val; }); }
       if(Array.isArray(ot.positions)&&ot.positions.length&&!(Array.isArray(bt.positions)&&bt.positions.length)) bt.positions=ot.positions;   // keep dragged dot locations through a sync merge
+      if(ot.depth&&!bt.depth) bt.depth=ot.depth;   // VWC chosen depth
       if((!bt.comment||!bt.comment.trim())&&ot.comment) bt.comment=ot.comment;
       if((!bt.method||!bt.method.trim())&&ot.method) bt.method=ot.method;
       bt.photos=mergeTestPhotos(bt.photos, ot.photos); }); }
+  if(Array.isArray(other.vwc)) base.vwc=Array.from(new Set([...(base.vwc||[]),...other.vwc])).filter(k=>VWC_POOL.includes(k));   // union active VWC depth slots
   if(other.audit){ base.audit=base.audit||{};
     Object.keys(other.audit).forEach(s=>{ const oa=other.audit[s]; let ba=base.audit[s];
       if(!ba){ base.audit[s]=oa; return; }
@@ -549,8 +636,10 @@ function mergeVenueInto(w,l){
     TESTS.forEach(t=>{ const lt=lp.tests&&lp.tests[t.key], wt=wp.tests&&wp.tests[t.key]; if(!lt||!wt) return;
       (lt.values||[]).forEach((val,vi)=>{ if(val!=null && wt.values[vi]==null) wt.values[vi]=val; });
       if(Array.isArray(lt.positions)&&lt.positions.length&&!(Array.isArray(wt.positions)&&wt.positions.length)) wt.positions=lt.positions;   // keep dragged dot locations when collapsing duplicates
+      if(lt.depth&&!wt.depth) wt.depth=lt.depth;   // VWC chosen depth
       if((!wt.comment||!wt.comment.trim())&&lt.comment) wt.comment=lt.comment;
       if((!wt.method||!wt.method.trim())&&lt.method) wt.method=lt.method; });
+    if(Array.isArray(lp.vwc)) wp.vwc=Array.from(new Set([...(wp.vwc||[]),...lp.vwc])).filter(k=>VWC_POOL.includes(k));   // union active VWC depth slots
     AUDIT.forEach(a=>{ const lf=lp.audit&&lp.audit[a[0]]&&lp.audit[a[0]].fields, wf=wp.audit&&wp.audit[a[0]]&&wp.audit[a[0]].fields; if(!lf||!wf) return;
       Object.keys(lf).forEach(k=>{ if((wf[k]==null||String(wf[k]).trim()==='')&&lf[k]!=null&&String(lf[k]).trim()!=='') wf[k]=lf[k]; }); });
     if(lp.overall&&lp.overall.level&&(!wp.overall||!wp.overall.level)) wp.overall=lp.overall; });
@@ -606,7 +695,7 @@ function render(){
   if(r==='home'){ app.innerHTML=scrHome(); }
   else if(r==='venue'){ const v=venue(); title=v.name; sub=v.pitches[CURP]?v.pitches[CURP].name:''; app.innerHTML=scrVenue(); }
   else if(r.startsWith('audit:')){ const s=AUDIT.find(a=>a[0]===r.split(':')[1]); title=s[0]+'. '+s[1]; sub='Venue audit'; app.innerHTML=scrAudit(r.split(':')[1]); }
-  else if(r.startsWith('test:')){ const t=TKEY[r.split(':')[1]]; title=t.name; sub='On-site testing'; app.innerHTML=scrTest(t.key); }
+  else if(r.startsWith('test:')){ const t=TKEY[r.split(':')[1]]; const _td=pitch()&&pitch().tests[t.key]; title=t.name+(t.depthSel&&_td&&_td.depth?' - '+_td.depth:''); sub='On-site testing'; app.innerHTML=scrTest(t.key); }
   else if(r.startsWith('grp:')){ const g=GKEY[r.split(':')[1]]; title=g.name; sub='On-site testing'; app.innerHTML=scrGroup(g.key); }
   else if(r==='overall'){ title='Overall assessment'; sub=venue().name; app.innerHTML=scrOverall(); }
   else if(r==='risk'){ title='Risk assessment'; sub=venue().name; app.innerHTML=scrRisk(); }
@@ -632,7 +721,7 @@ function venueProgress(v){
   // Granular: every individual measurement counts, so the bar moves on each value entered
   // (not just when a test parameter gets its first reading).
   let done=0,total=0;
-  v.pitches.forEach(p=>{ TESTS.forEach(t=>{ const td=p.tests&&p.tests[t.key]; total+=(t.n||0); if(td) done+=stats(td.values).done; }); });
+  v.pitches.forEach(p=>{ pitchTestList(p).forEach(t=>{ const td=p.tests&&p.tests[t.key]; total+=(t.n||0); if(td) done+=stats(td.values).done; }); });   // only active VWC slots count
   return total?Math.round(done/total*100):0;
 }
 function scrHome(){
@@ -697,7 +786,7 @@ function scrVenue(){
       ${complete?'<span class="tick">✓</span>':(p.audit[s[0]].brief?'<span class="pill">brief</span>':'<span class="chev">›</span>')}</div>`;
   }).join('');
 
-  const shownGroups=new Set();
+  const shownGroups=new Set(); let vwcDone=false;
   const testRows=TESTS.map(t=>{
     const g=GROUP_OF[t.key];
     if(g){   // collapse all members into a single combined row, rendered at the first member's slot
@@ -708,6 +797,19 @@ function scrVenue(){
       return `<div class="row" data-go="grp:${g.key}"><div class="ic">⬡</div>
         <div class="meta"><div class="t">${esc(g.name)}</div>
         <div class="d">${g.n} shared location${g.n>1?'s':''} · ${g.members.length} readings each</div></div>${status}</div>`;
+    }
+    if(t.depthSel){   // VWC pool: render one row per active depth slot + an "Add another depth" row
+      if(vwcDone) return ''; vwcDone=true;
+      const keys=vwcKeys(p);
+      const rows=keys.map(k=>{ const tk=TKEY[k], st=stats(p.tests[k].values);
+        const status=st.done?`<span class="pill">${st.done}/${tk.n}</span>`:'<span class="chev">›</span>';
+        return `<div class="row" data-go="test:${k}"><div class="ic">⬡</div>
+          <div class="meta"><div class="t">${esc(testDisplayName(p,k))} ${tk.pri?'<span class="badge-pri">PRIORITY</span>':''}</div>
+          <div class="d">${tk.n} positions${st.avg!=null?` · avg ${fmt(st.avg,tk.unit)}`:''}</div></div>${status}</div>`;
+      }).join('');
+      const add=keys.length<VWC_POOL.length ? `<div class="row" data-addvwc="1" style="cursor:pointer"><div class="ic">＋</div>
+        <div class="meta"><div class="t">Add another depth</div><div class="d">Record VWC at a different probe depth</div></div><span class="chev">›</span></div>` : '';
+      return rows+add;
     }
     const st=stats(p.tests[t.key].values);
     const status=st.done?`<span class="pill">${st.done}/${t.n}</span>`:'<span class="chev">›</span>';
@@ -769,7 +871,7 @@ function scrTest(key){
     <input data-pos="${i}" inputmode="decimal" enterkeyhint="${i<td.values.length-1?'next':'done'}" placeholder="–" value="${v!=null?v:''}">
     <div class="pu">${esc(t.unit)||'&nbsp;'}</div></div>`).join('');
   const noteLine=t.note?`<div class="hint">${esc(t.note)}</div>`:'';
-  const idx=TESTS.findIndex(x=>x.key===key), nx=TESTS[idx+1];
+  const _tl=pitchTestList(p); const idx=_tl.findIndex(x=>x.key===key), nx=_tl[idx+1];   // skip inactive VWC slots
   let obsBox='';
   if(t.obsPhotos){
     const ph=td.photos||{};
@@ -780,7 +882,11 @@ function scrTest(key){
     }).join('');
     obsBox=`<h2 class="sec">Observation photos</h2><div class="card" style="padding:8px 12px">${rows}</div>`;
   }
-  return `<div class="hint">${esc(t.name)} · ${t.n} position${t.n>1?'s':''}${t.pri?' · <b style="color:var(--crit)">priority</b>':''} <span class="saved" id="savedFlag">saved ✓</span></div>
+  const depthBox = t.depthSel ? `<div class="card" style="padding:10px 12px;margin-bottom:8px"><div class="field" style="margin:0">
+      <label>Measurement depth</label>
+      <select id="vwcDepth">${VWC_DEPTHS.map(dp=>`<option ${ (td.depth||VWC_DEPTHS[0])===dp?'selected':''}>${esc(dp)}</option>`).join('')}</select></div></div>` : '';
+  return `<div class="hint">${esc(t.name)}${t.depthSel&&td.depth?' — '+esc(td.depth):''} · ${t.n} position${t.n>1?'s':''}${t.pri?' · <b style="color:var(--crit)">priority</b>':''} <span class="saved" id="savedFlag">saved ✓</span></div>
+    ${depthBox}
     ${pitchSVG(key)}
     <div class="leg"><span><i class="dot" style="background:var(--green)"></i> recorded</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
     <div class="card" style="padding:0">
@@ -797,7 +903,8 @@ function scrTest(key){
       <div class="field"><label>Comments / observations</label>
         <textarea id="testComment" placeholder="e.g. lower readings in the droughted southern in-goal area…">${esc(td.comment)}</textarea></div></div>
     ${obsBox}
-    ${nx?`<button class="btn primary" id="nextTest">Next test: ${esc(nx.name)} →</button>`:''}
+    ${nx?`<button class="btn primary" id="nextTest">Next test: ${esc(testDisplayName(p,nx.key))} →</button>`:''}
+    ${t.depthSel&&vwcKeys(p).length>1?`<button class="btn ghost" id="rmVwc" style="color:var(--crit)">🗑 Remove this depth</button>`:''}
     <button class="btn ghost" data-back="1">Done</button>`;
 }
 
@@ -849,9 +956,9 @@ function scrRisk(){
 
 function scrResults(){
   const p=pitch();
-  const rows=TESTS.map(t=>{const st=stats(p.tests[t.key].values);
+  const rows=pitchTestList(p).map(t=>{const st=stats(p.tests[t.key].values);
     const dim=st.avg==null?'dim':'';
-    return `<tr class="${t.pri?'pri':''}"><td>${esc(t.name)} ${t.pri?'<span class="badge-pri">PRI</span>':''}</td>
+    return `<tr class="${t.pri?'pri':''}"><td>${esc(testDisplayName(p,t.key))} ${t.pri?'<span class="badge-pri">PRI</span>':''}</td>
       <td class="num ${dim}">${st.avg!=null?fmt(st.avg,t.unit):'—'}</td>
       <td class="num ${dim}">${st.varPct!=null?st.varPct:'—'}</td></tr>`;}).join('');
   return `<div class="hint">Live from your on-site entries. Max variance = largest reading deviation from the average (%).</div>
@@ -1030,7 +1137,7 @@ function pitchSVG(key){
     <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="randDots">🎲 Randomize</button> <button class="btn sm ghost" id="resetDots">↺ Reset to default</button></div>`;
 }
 /* small colour key under a single-metric map; notes grass class for grass-dependent metrics */
-const GRASS_DEP={ndvi:1,soil:1,turf_height:1,moisture:1,moisture76:1};
+const GRASS_DEP={ndvi:1,soil:1,turf_height:1,moisture:1,moisture2:1,moisture3:1,moisture4:1};
 function qualityLegend(key,grass){
   if(!TKEY[key]) return '';
   const sw=l=>`<span style="display:inline-flex;align-items:center;gap:3px;margin:0 5px 2px 0"><span style="width:11px;height:11px;border-radius:50%;background:${QC[l]};border:1px solid ${QSTROKE[l]};display:inline-block"></span>${QLABEL[l]}</span>`;
@@ -1117,6 +1224,7 @@ function bind(){
   app.querySelectorAll('[data-back]').forEach(e=>e.onclick=back);
   app.querySelectorAll('[data-pitch]').forEach(e=>e.onclick=()=>{CURP=+e.dataset.pitch;render();});
   app.querySelectorAll('[data-addpitch]').forEach(e=>e.onclick=addPitch);
+  app.querySelectorAll('[data-addvwc]').forEach(e=>e.onclick=addVwcDepth);
   app.querySelectorAll('[data-renamepitch]').forEach(e=>e.onclick=ev=>{ev.stopPropagation();renamePitch(+e.currentTarget.dataset.renamepitch);});
 
   if($('uploadBrief'))$('uploadBrief').onclick=()=>$('pdfInput').click();
@@ -1152,7 +1260,13 @@ function bind(){
   if(cur().startsWith('grp:')){ const g=GKEY[cur().split(':')[1]]; if(g) bindGroupEntry(g); }   // combined turf/weed/height entry
   if($('randDots'))$('randDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=randomPositions(TKEY[key].n); save(true); render(); toast('Positions randomized'); };
   if($('resetDots'))$('resetDots').onclick=()=>{ const key=cur().split(':')[1]; pitch().tests[key].positions=null; save(true); render(); toast('Positions reset to default'); };
-  if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const i=TESTS.findIndex(x=>x.key===key); const nx=TESTS[i+1]; if(nx)goReplace('test:'+nx.key); };
+  if($('nextTest'))$('nextTest').onclick=()=>{ const key=cur().split(':')[1]; const tl=pitchTestList(pitch()); const i=tl.findIndex(x=>x.key===key); const nx=tl[i+1]; if(nx)goReplace('test:'+nx.key); };
+  if($('vwcDepth'))$('vwcDepth').onchange=()=>{ pitch().tests[cur().split(':')[1]].depth=$('vwcDepth').value; save(true); render(); };   // depth shows in header + venue row title
+  if($('rmVwc'))$('rmVwc').onclick=()=>{ const key=cur().split(':')[1], p=pitch(); if(vwcKeys(p).length<=1){toast('Keep at least one depth');return;}
+    if(!confirm('Remove this VWC depth and its readings?'))return;
+    p.vwc=vwcKeys(p).filter(k=>k!==key);
+    p.tests[key]={values:Array(TKEY[key].n).fill(null),comment:'',method:'',photos:{},depth:VWC_DEFAULT_DEPTH[key]||VWC_DEPTHS[0]};   // clear the freed slot
+    save(); back(); toast('Depth removed'); };
   if($('testMethod'))$('testMethod').oninput=()=>{pitch().tests[cur().split(':')[1]].method=$('testMethod').value;save(true);};
   if($('testComment'))$('testComment').oninput=()=>{pitch().tests[cur().split(':')[1]].comment=$('testComment').value;save(true);};
   // observation photos (per position)
@@ -1221,6 +1335,11 @@ function bind(){
 
 /* ----------------------------- actions ----------------------------- */
 function addPitch(){ const name=prompt('Name for the new pitch:','Pitch '+(venue().pitches.length+1)); if(!name)return; venue().pitches.push(newPitch(name.trim())); CURP=venue().pitches.length-1; save(); render(); }
+function addVwcDepth(){ const p=pitch(); const keys=vwcKeys(p); const next=VWC_POOL.find(k=>!keys.includes(k));
+  if(!next){ toast('Maximum depths reached'); return; }
+  keys.push(next);   // activate the next free slot with a fresh bucket + default depth, then open it
+  p.tests[next]={values:Array(TKEY[next].n).fill(null),comment:'',method:'',photos:{},depth:VWC_DEFAULT_DEPTH[next]||VWC_DEPTHS[0]};
+  save(); go('test:'+next,true); }
 function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=prompt('Rename pitch:',p.name); if(name===null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
 function editVenue(){ go('venueform',true); }
@@ -1360,11 +1479,11 @@ function csvForVenue(onlyVenue){
   const rows=[['Venue','Pitch','Category','Item','Value','Unit']];
   const vs=onlyVenue?[onlyVenue]:state.venues;
   vs.forEach(v=>v.pitches.forEach(p=>{
-    TESTS.forEach(t=>{ const td=p.tests[t.key]; td.values.forEach((val,i)=>rows.push([v.name,p.name,'Test: '+t.name,'P'+(i+1),val==null?'':val,t.unit]));
-      const st=stats(td.values); rows.push([v.name,p.name,'Test summary',t.name+' — average',st.avg!=null?Math.round(st.avg*100)/100:'',t.unit]);
-      rows.push([v.name,p.name,'Test summary',t.name+' — max variance %',st.varPct!=null?st.varPct:'','%']);
-      if(td.method) rows.push([v.name,p.name,'Test method',t.name,td.method,'']);
-      if(td.comment) rows.push([v.name,p.name,'Test comment',t.name,td.comment,'']); });
+    pitchTestList(p).forEach(t=>{ const nm=testDisplayName(p,t.key); const td=p.tests[t.key]; td.values.forEach((val,i)=>rows.push([v.name,p.name,'Test: '+nm,'P'+(i+1),val==null?'':val,t.unit]));
+      const st=stats(td.values); rows.push([v.name,p.name,'Test summary',nm+' — average',st.avg!=null?Math.round(st.avg*100)/100:'',t.unit]);
+      rows.push([v.name,p.name,'Test summary',nm+' — max variance %',st.varPct!=null?st.varPct:'','%']);
+      if(td.method) rows.push([v.name,p.name,'Test method',nm,td.method,'']);
+      if(td.comment) rows.push([v.name,p.name,'Test comment',nm,td.comment,'']); });
     AUDIT.forEach(s=>{ const a=p.audit[s[0]]; if(a.brief)rows.push([v.name,p.name,'Audit '+s[0]+' brief',s[1],a.brief,'']);
       Object.entries(a.fields).forEach(([k,val])=>{ if(val&&String(val).trim())rows.push([v.name,p.name,'Audit '+s[0],k,val,'']); }); });
     RISK.forEach(([k,label])=>{ if(p.risk[k])rows.push([v.name,p.name,'Risk',label,p.risk[k]+' ('+RLABEL[p.risk[k]]+')','']); });
@@ -1459,7 +1578,9 @@ const REPORT_MAP = {
   G:{'Fertilizer applications/yr (type & rate)':'g_fert','Herbicide applications per year':'g_herb','Other turf management activities':'g_other'},
   H:{'Additional playability risks':'h_risks','General comments on surface / maintenance':'h_comments'},
 };
-const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','shear','ndvi','clegg','traction','moisture','moisture76'];
+const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','shear','ndvi','clegg','traction'];   // VWC handled separately (one row per active depth)
+// Results rows for the VWC (soil-moisture) depth slots active on a pitch: [{key,label}].
+function vwcResRows(p){ return vwcKeys(p).map(k=>({key:k, label:'Soil Moisture Content'+((p.tests[k]&&p.tests[k].depth)?' — '+p.tests[k].depth:'')})); }
 function today(){ return new Date().toISOString().slice(0,10); }
 function sanitize(s){ return (s||'').replace(/[^\w\-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40); }
 function reportName(v,p,ext){ return `Labosport_${sanitize(v.name)}_${sanitize(p.name)}_${today()}.${ext}`; }
@@ -1480,6 +1601,9 @@ function buildReportData(v,p){
   // results
   RES_KEYS.forEach(k=>{ const t=TKEY[k]; const st=stats(p.tests[k].values);
     d['res_'+k+'_avg']=st.avg!=null?fmt(st.avg,t.unit):''; d['res_'+k+'_var']=st.varPct!=null?String(st.varPct):''; d['res_'+k+'_cmt']=p.tests[k].comment||''; });
+  // VWC results — one looped row per active depth slot ({#moisture_rows}…{/moisture_rows} in the template)
+  d.moisture_rows=vwcResRows(p).map(({key,label})=>{ const st=stats(p.tests[key].values);
+    return { label, avg: st.avg!=null?fmt(st.avg,'%'):'', var: st.varPct!=null?String(st.varPct):'', cmt: p.tests[key].comment||'' }; });
   // audit fields
   AUDIT.forEach(s=>{ const map=REPORT_MAP[s[0]]||{}; const f=p.audit[s[0]].fields;
     Object.keys(map).forEach(label=>{ const val=f[label]; if(val!=null&&String(val).trim())d[map[label]]=String(val); }); });
@@ -1538,7 +1662,7 @@ function buildTestMapsImage(p,v){
   shown.forEach((t,i)=>{ const rw=Math.floor(i/cols), col=i%cols, ox=gap+col*(cellW+gap), oy=gap+rw*(mapH+titleH+gap);
     const st=stats((p.tests&&p.tests[t.key]&&p.tests[t.key].values)||[]);
     ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
+    ctx.fillText(testDisplayName(p,t.key)+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')',ox,oy);
     drawPitchOnCanvas(ctx,ox,oy+titleH,cellW,mapH,p,t.key,v);
   });
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
@@ -1556,11 +1680,72 @@ function buildSingleTestMapImage(p,key,v){
   drawPitchOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v);
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
-/* Section 3 maps: which parameters, and the device-named caption beneath each. Edit captions here. */
+
+/* ---- FIFA-quality heat maps (smooth IDW surface, no dots) ---- */
+// Interpolate a quality surface across the pitch from the measured points and colour
+// it on the continuous FIFA ramp (thermal look, but red=unacceptable … green=excellent).
+function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
+  const pad=w*0.04, ix=ox+pad, iy=oy+pad, iw=w-2*pad, ih=h-2*pad;
+  const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[];
+  const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
+  const pts=[];
+  pos.forEach((pp,k)=>{ const val=vals[k]; if(val==null||isNaN(val)) return;
+    const q=fifaScore(key,val,grass,hybrid); if(q==null) return;
+    pts.push({x:pp[0]*iw, y:pp[1]*ih, q}); });
+  if(pts.length){
+    // Render the surface at a capped resolution (it's smooth, so upscaling is seamless) to keep export fast on phones.
+    const GW=Math.max(2,Math.min(220,Math.round(iw))), GH=Math.max(2,Math.round(GW*ih/iw)), sx=GW/iw, sy=GH/ih;
+    const gp=pts.map(pt=>({x:pt.x*sx, y:pt.y*sy, q:pt.q}));
+    const off=document.createElement('canvas'); off.width=GW; off.height=GH;
+    const octx=off.getContext('2d'), img=octx.createImageData(GW,GH), d=img.data;
+    for(let y=0;y<GH;y++){ for(let x=0;x<GW;x++){
+      let sw=0,sq=0;
+      for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1;
+        const wgt=1/d2; sw+=wgt; sq+=wgt*gp[i].q; }
+      const [r,g,b]=qColorRGB(sq/sw); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
+    }}
+    octx.putImageData(img,0,0);
+    ctx.imageSmoothingEnabled=true; if('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality='high';
+    ctx.drawImage(off,0,0,GW,GH, ix,iy,iw,ih);
+  } else {
+    ctx.fillStyle='#e7ebee'; ctx.fillRect(ix,iy,iw,ih);
+    ctx.fillStyle='#7a838c'; ctx.font='italic 16px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(qKnotsFor(key,grass,hybrid)?'No readings to map':'Set grass species to grade this metric', ix+iw/2, iy+ih/2);
+  }
+  // pitch outline + key markings on top
+  ctx.strokeStyle='#ffffff'; ctx.lineWidth=2; ctx.strokeRect(ix,iy,iw,ih);
+  ctx.beginPath(); ctx.moveTo(ix+iw/2,iy); ctx.lineTo(ix+iw/2,iy+ih); ctx.stroke();
+  ctx.setLineDash([5,5]); [0.22,0.78].forEach(fx=>{const lx=ix+iw*fx; ctx.beginPath(); ctx.moveTo(lx,iy); ctx.lineTo(lx,iy+ih); ctx.stroke();}); ctx.setLineDash([]);
+}
+// horizontal FIFA colour key under a heat map, with the grass-scale note
+function drawQualityBar(ctx,x,y,w,key,grass){
+  const barH=16, n=240;
+  for(let i=0;i<n;i++){ const [r,g,b]=qColorRGB(1+4*i/(n-1)); ctx.fillStyle='rgb('+r+','+g+','+b+')'; ctx.fillRect(x+w*i/n, y, w/n+1, barH); }
+  ctx.strokeStyle='#9aa3ab'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,barH);
+  ctx.fillStyle='#28282A'; ctx.font='12px Arial,sans-serif'; ctx.textBaseline='top'; ctx.textAlign='center';
+  ['Unacceptable','Poor','Satisfactory','Good','Excellent'].forEach((L,i)=>ctx.fillText(L, x+w*(i+0.5)/5, y+barH+4));
+  let note='FIFA quality scale'; if(GRASS_DEP[key]) note += grass?(' · '+grass+'-season thresholds'):' · grass species not set — surface not graded';
+  ctx.textAlign='left'; ctx.fillStyle='#5b6570'; ctx.font='italic 12px Arial,sans-serif'; ctx.fillText(note, x, y+barH+22);
+}
+/* one metric's heat map for Section 3 (title + heat surface + colour key) */
+function buildHeatMapImage(p,key,v){
+  const t=TKEY[key], big=(key==='moisture76');
+  const cellW=big?760:620, mapH=big?360:300, titleH=40, legendH=66, pad=14;
+  const W=cellW+pad*2, H=titleH+mapH+legendH+pad*2;
+  const c=document.createElement('canvas'); c.width=W; c.height=H; const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+  const st=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]);
+  ctx.fillStyle='#28282A'; ctx.font='bold 22px Arial,sans-serif'; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillText(t.name+'  ('+t.n+' pos'+(st.avg!=null?', avg '+fmt(st.avg,t.unit):'')+')', pad, pad);
+  drawHeatOnCanvas(ctx,pad,pad+titleH,cellW,mapH,p,key,v);
+  drawQualityBar(ctx,pad,pad+titleH+mapH+12,cellW,key,pitchGrass(v,p));
+  return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
+}
+/* Section 3 maps: parameter, image tag, caption tag, and device caption. Order = report order. */
 const SEC3_MAPS=[
-  ['shear','map_shear','cap_shear','Root zone shear strength — measured with a shear vane apparatus'],
-  ['clegg','map_clegg','cap_clegg','Clegg impact (compaction) — measured with a Clegg Impact Soil Tester'],
-  ['traction','map_traction','cap_traction','Surface traction (19 mm stud) — measured with a studded-disc rotational traction tester'],
+  ['clegg','map_clegg','cap_clegg','Compaction (Clegg) heat map — measured with a Clegg Impact Soil Tester. Colours show FIFA quality (red = unacceptable → green = excellent).'],
+  ['traction','map_traction','cap_traction','Surface traction (19 mm stud) heat map — measured with a studded-disc rotational traction tester. Colours show FIFA quality.'],
+  ['moisture76','map_moisture76','cap_moisture76','Volumetric water content at 76 mm (3 in) heat map — measured with a soil-moisture probe. Colours show FIFA quality.'],
 ];
 
 function loadImage(src){ return new Promise(res=>{ if(!src||typeof src!=='string'){ res(null); return; }   // skip photos with no image data (avoids GET /undefined 404)
@@ -1602,14 +1787,15 @@ async function buildPitchReportData(v,p){
     if(tm){ data.has_test_maps=true; data.test_maps=tm.dataUrl; sizeMap[tm.dataUrl]=fitBox(tm.w,tm.h,640,900); }
     else { data.has_test_maps=false; data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; } }
   catch(e){ console.error('test-maps image failed:',e); data.has_test_maps=false; data.test_maps=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
-  // Section 3 — individual location maps for shear, compaction (clegg) and traction, each with a device caption.
+  // Section 3 — FIFA-quality heat maps for compaction (Clegg), traction and VWC@76 mm, each with a device caption.
   // Skip a map entirely (template drops the {#has_KEY}…{/has_KEY} section) when that metric has no readings.
   SEC3_MAPS.forEach(([key,imgTag,capTag,caption])=>{
     const has=stats((p.tests&&p.tests[key]&&p.tests[key].values)||[]).done>0;
     data['has_'+key]=has;
     if(!has){ data[imgTag]=WHITE_PX; data[capTag]=''; return; }   // no data → section removed, tags still defined
-    try{ const m=buildSingleTestMapImage(p,key,v); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h,440,430); }
-    catch(e){ console.error('section-3 map failed ('+key+'):',e); data[imgTag]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
+    const big=(key==='moisture76');
+    try{ const m=buildHeatMapImage(p,key,v); data[imgTag]=m.dataUrl; sizeMap[m.dataUrl]=fitBox(m.w,m.h, big?560:470, big?640:520); }
+    catch(e){ console.error('section-3 heat map failed ('+key+'):',e); data[imgTag]=WHITE_PX; sizeMap[WHITE_PX]=[235,150]; }
     data[capTag]=caption;
   });
   try{ const sp=await buildSoilPhotosImage(p);
@@ -1750,7 +1936,9 @@ function reportSheet(v,p){
   const riskRows=RISK.map(([k,label])=>{const lv=p.risk[k]||0;
     return `<tr><td>${E(label)}</td><td>${lv?RLABEL[lv]:'—'}</td><td style="${riskCellStyle(lv)}">${lv?lv:'—'}</td></tr>`;}).join('');
   const resRows=RES_KEYS.map(k=>{const t=TKEY[k],st=stats(p.tests[k].values);
-    return rrow([E(t.name),st.avg!=null?E(fmt(st.avg,t.unit)):'—',st.varPct!=null?st.varPct:'—',E(p.tests[k].comment||'')]);}).join('');
+    return rrow([E(t.name),st.avg!=null?E(fmt(st.avg,t.unit)):'—',st.varPct!=null?st.varPct:'—',E(p.tests[k].comment||'')]);}).join('')
+    + vwcResRows(p).map(({key,label})=>{const st=stats(p.tests[key].values);
+        return rrow([E(label),st.avg!=null?E(fmt(st.avg,'%')):'—',st.varPct!=null?st.varPct:'—',E(p.tests[key].comment||'')]);}).join('');
   const appendix=AUDIT.map(s=>{const f=p.audit[s[0]].fields;const rows=s[4].map(([label])=>{const val=f[label];return rrow([E(label),val?E(val):'—']);}).join('');
     return `<h3>Appendix ${s[0]} — ${E(s[1])}</h3><table class="t2">${rows}</table>`;}).join('');
   let bench=''; const pb=p.bench||{};
