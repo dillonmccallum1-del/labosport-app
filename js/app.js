@@ -1683,9 +1683,10 @@ function fitBox(w,h,maxW,maxH){ const s=Math.min(maxW/w,maxH/h); return [Math.ro
    (pitchFieldInner + FIFA-coloured dots) so the report maps look identical to the app's.
    The app SVG uses a PW×PH viewBox; we fit it uniformly (keeping the rugby-field
    proportions) into the box and centre it, then draw every marking/dot in viewBox units × s. */
-function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v,hidePending){
-  const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[];
-  const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
+// Draw the rugby-field base (green background, playing field, in-goal end zones) into the
+// box, keeping the app's PW×PH proportions and centring it. Returns the geometry + the inner
+// playing-field rect (canvas px) so callers can place dots OR a heat surface inside it.
+function pitchFieldOnCanvas(ctx,ox,oy,w,h){
   const s=Math.min(w/PW, h/PH), fw=PW*s, fh=PH*s, bx=ox+(w-fw)/2, by=oy+(h-fh)/2;
   const TX=cx=>bx+cx*s, TY=cy=>by+cy*s;                          // viewBox coord → canvas
   const ix=PPAD, iy=PPAD, iw=PW-2*PPAD, ih=PH-2*PPAD;
@@ -1694,6 +1695,11 @@ function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v,hidePending){
   ctx.fillStyle='#36a058'; ctx.fillRect(TX(ix),TY(iy),iw*s,ih*s);            // inner field
   ctx.fillStyle='#2f8f4e';                                                   // in-goal end zones
   ctx.fillRect(TX(2),TY(iy),(PPAD-2)*s,ih*s); ctx.fillRect(TX(PW-PPAD),TY(iy),(PPAD-2)*s,ih*s);
+  return {s,TX,TY,X,Y,ix,iy,iw,ih, inner:{x:TX(ix),y:TY(iy),w:iw*s,h:ih*s}};
+}
+// Overlay the white field markings (try/22m/halfway lines, 5m/15m dashes, goal posts) on top.
+function pitchMarkingsOnCanvas(ctx,g){
+  const {s,TX,TY,X,Y,ix,iy,iw,ih}=g;
   ctx.strokeStyle='#ffffff';
   const line=(x1,y1,x2,y2,lw,dash)=>{ ctx.lineWidth=lw*s; ctx.setLineDash((dash||[]).map(d=>d*s));
     ctx.beginPath(); ctx.moveTo(TX(x1),TY(y1)); ctx.lineTo(TX(x2),TY(y2)); ctx.stroke(); ctx.setLineDash([]); };
@@ -1704,6 +1710,13 @@ function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v,hidePending){
   ctx.globalAlpha=0.85; [0.07,0.21,0.79,0.93].forEach(f=>line(X(0.02),Y(f),X(0.98),Y(f),1,[5,6])); ctx.globalAlpha=1;  // 5m/15m
   [X(0),X(1)].forEach(gx=>{ line(gx,Y(.40),gx,Y(.60),2); const dir=(gx===X(0))?-5:5;  // goal posts
     line(gx,Y(.40),gx+dir,Y(.40),2); line(gx,Y(.60),gx+dir,Y(.60),2); });
+}
+function drawPitchOnCanvas(ctx,ox,oy,w,h,p,key,v,hidePending){
+  const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[];
+  const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
+  const g=pitchFieldOnCanvas(ctx,ox,oy,w,h);
+  pitchMarkingsOnCanvas(ctx,g);
+  const {s,TX,TY,ix,iy,iw,ih}=g;
   const r=11*s;
   pos.forEach((pp,k)=>{ const done=vals[k]!=null;
     if(hidePending && !done) return;                            // Appendix J: only show dots that were actually measured
@@ -1779,14 +1792,16 @@ function bicubicSampleN(G,gx,gy,S){
 // Interpolate a quality surface across the pitch from the measured points and colour
 // it on the continuous FIFA ramp (thermal look, but red=unacceptable … green=excellent).
 function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
-  const pad=w*0.04, ix=ox+pad, iy=oy+pad, iw=w-2*pad, ih=h-2*pad;
+  // Same rugby-field image as the app/dot maps: green field + in-goal zones first, the heat
+  // surface painted inside the playing area, then the white markings overlaid on top.
+  const g=pitchFieldOnCanvas(ctx,ox,oy,w,h);
+  const ix=g.inner.x, iy=g.inner.y, iw=g.inner.w, ih=g.inner.h;
   const pos=testPositions(p,key), vals=(p.tests[key]&&p.tests[key].values)||[];
   const grass=pitchGrass(v,p), hybrid=pitchHybrid(v,p);
   const pts=[];
   pos.forEach((pp,k)=>{ const val=vals[k]; if(val==null||isNaN(val)) return;
     const q=fifaScore(key,val,grass,hybrid); if(q==null) return;
     pts.push({x:pp[0]*iw, y:pp[1]*ih, q}); });
-  const t=TKEY[key];
   const N=effN(p,key), side = N===25 ? 5 : (N===9 ? 3 : 0);            // 5×5 full survey · 3×3 reduced non-benchmark · else IDW
   const G = side ? heatGridN(key,vals,grass,hybrid,side) : null;       // bicubic grid for the grid-shaped metrics
   if(G || pts.length){
@@ -1801,20 +1816,16 @@ function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
       if(G){ const fx=GW>1?x/(GW-1):0, fy=GH>1?y/(GH-1):0;     // nodes sit at field-fractions (i+0.5)/side → grid coord = side·f-0.5
         q=bicubicSampleN(G, side*fx-0.5, side*fy-0.5, side); }
       else { let sw=0,sq=0; for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1; const wt=1/d2; sw+=wt; sq+=wt*gp[i].q; } q=sq/sw; }
-      const [r,g,b]=qColorRGB(q); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
+      const [r,gg,b]=qColorRGB(q); const o=(y*GW+x)*4; d[o]=r; d[o+1]=gg; d[o+2]=b; d[o+3]=255;
     }}
     octx.putImageData(img,0,0);
     ctx.imageSmoothingEnabled=true; if('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality='high';
     ctx.drawImage(off,0,0,GW,GH, ix,iy,iw,ih);
   } else {
-    ctx.fillStyle='#e7ebee'; ctx.fillRect(ix,iy,iw,ih);
     ctx.fillStyle='#7a838c'; ctx.font='italic 16px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(qKnotsFor(key,grass,hybrid)?'No readings to map':'Set grass species to grade this metric', ix+iw/2, iy+ih/2);
   }
-  // pitch outline + key markings on top
-  ctx.strokeStyle='#ffffff'; ctx.lineWidth=2; ctx.strokeRect(ix,iy,iw,ih);
-  ctx.beginPath(); ctx.moveTo(ix+iw/2,iy); ctx.lineTo(ix+iw/2,iy+ih); ctx.stroke();
-  ctx.setLineDash([5,5]); [0.22,0.78].forEach(fx=>{const lx=ix+iw*fx; ctx.beginPath(); ctx.moveTo(lx,iy); ctx.lineTo(lx,iy+ih); ctx.stroke();}); ctx.setLineDash([]);
+  pitchMarkingsOnCanvas(ctx,g);   // full rugby markings (try/22m/halfway/5m/15m, goal posts) on top
 }
 // horizontal FIFA colour key under a heat map, with the grass-scale note
 function drawQualityBar(ctx,x,y,w,key,grass){
