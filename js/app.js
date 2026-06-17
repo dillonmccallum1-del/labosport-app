@@ -1183,7 +1183,7 @@ function qualityLegend(key,grass){
     note = grass ? ` · ${grass}-season scale` : ` · <b style="color:#b00">set grass species to colour these</b>`;
     if(key==='soil') note = (grass||pitchHybrid(venue(),pitch())) ? ' · root-depth scale' : note;
   }
-  return `<div class="qlegend" style="font-size:11px;color:#5b6570;text-align:center;margin:2px 0 6px;line-height:1.5">FIFA quality: ${[1,2,3,4,5].map(sw).join('')}<span style="opacity:.8">${note}</span></div>`;
+  return `<div class="qlegend" style="font-size:11px;color:#5b6570;text-align:center;margin:2px 0 6px;line-height:1.5">Metric Threshold Scale: ${[1,2,3,4,5].map(sw).join('')}<span style="opacity:.8">${note}</span></div>`;
 }
 
 /* ---- grouped tests: shared positions across all members ---- */
@@ -1762,7 +1762,7 @@ function drawQualityBar(ctx,x,y,w,key,grass){
   ctx.strokeStyle='#9aa3ab'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,barH);
   ctx.fillStyle='#28282A'; ctx.font='12px Arial,sans-serif'; ctx.textBaseline='top'; ctx.textAlign='center';
   ['Unacceptable','Poor','Satisfactory','Good','Excellent'].forEach((L,i)=>ctx.fillText(L, x+w*(i+0.5)/5, y+barH+4));
-  let note='FIFA quality scale'; if(GRASS_DEP[key]) note += grass?(' · '+grass+'-season thresholds'):' · grass species not set — surface not graded';
+  let note='Metric Threshold Scale'; if(GRASS_DEP[key]) note += grass?(' · '+grass+'-season thresholds'):' · grass species not set — surface not graded';
   ctx.textAlign='left'; ctx.fillStyle='#5b6570'; ctx.font='italic 12px Arial,sans-serif'; ctx.fillText(note, x, y+barH+22);
 }
 /* one metric's heat map for Section 3 (title + heat surface + colour key) */
@@ -1781,8 +1781,8 @@ function buildHeatMapImage(p,key,v){
 }
 /* Section 3 maps: parameter, image tag, caption tag, and device caption. Order = report order. */
 const SEC3_MAPS=[
-  ['clegg','map_clegg','cap_clegg','Compaction (Clegg) heat map — measured with a Clegg Impact Soil Tester. Colours show FIFA quality (red = unacceptable → green = excellent).'],
-  ['traction','map_traction','cap_traction','Surface traction (19 mm stud) heat map — measured with a studded-disc rotational traction tester. Colours show FIFA quality.'],
+  ['clegg','map_clegg','cap_clegg','Compaction (Clegg) heat map — measured with a Clegg Impact Soil Tester. Colours show the Metric Threshold Scale (red = unacceptable → green = excellent).'],
+  ['traction','map_traction','cap_traction','Surface traction (19 mm stud) heat map — measured with a studded-disc rotational traction tester. Colours show the Metric Threshold Scale.'],
 ];   // VWC heat maps are built separately, one per active depth slot (see vwc_maps loop in buildPitchReportData)
 
 function loadImage(src){ return new Promise(res=>{ if(!src||typeof src!=='string'){ res(null); return; }   // skip photos with no image data (avoids GET /undefined 404)
@@ -1839,7 +1839,7 @@ async function buildPitchReportData(v,p){
     const depth=(p.tests[k]&&p.tests[k].depth)||''; let img=WHITE_PX;
     try{ const m=buildHeatMapImage(p,k,v); img=m.dataUrl; sizeMap[img]=fitBox(m.w,m.h,560,640); }
     catch(e){ console.error('section-3 VWC heat map failed ('+k+'):',e); }
-    return { vwc_img:img, vwc_cap:'Volumetric water content'+(depth?' at '+depth:'')+' heat map — measured with a soil-moisture probe. Colours show FIFA quality.' };
+    return { vwc_img:img, vwc_cap:'Volumetric water content'+(depth?' at '+depth:'')+' heat map — measured with a soil-moisture probe. Colours show the Metric Threshold Scale.' };
   });
   try{ const sp=await buildSoilPhotosImage(p);
     if(sp){ data.has_soil_photos=true; data.soil_photos=sp.dataUrl; sizeMap[sp.dataUrl]=fitBox(sp.w,sp.h,660,900); }
