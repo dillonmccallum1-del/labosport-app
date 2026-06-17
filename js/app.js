@@ -1719,11 +1719,7 @@ function buildSingleTestMapImage(p,key,v){
   return {dataUrl:c.toDataURL('image/png'),w:W,h:H};
 }
 
-/* ---- FIFA-quality heat maps (smooth surface, no dots) ---- */
-// Smoothing radius as a fraction of map width (≈ one sample spacing). Higher = smoother /
-// less obvious where points were taken; lower = more localised. Sample columns sit ~0.2 of
-// the field apart, so ~0.20–0.30 blends neighbours without washing out real variation.
-const HEAT_SMOOTH=0.16;
+/* ---- FIFA-quality heat maps (IDW surface, no dots) ---- */
 // Interpolate a quality surface across the pitch from the measured points and colour
 // it on the continuous FIFA ramp (thermal look, but red=unacceptable … green=excellent).
 function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
@@ -1738,14 +1734,12 @@ function drawHeatOnCanvas(ctx,ox,oy,w,h,p,key,v){
     // Render the surface at a capped resolution (it's smooth, so upscaling is seamless) to keep export fast on phones.
     const GW=Math.max(2,Math.min(220,Math.round(iw))), GH=Math.max(2,Math.round(GW*ih/iw)), sx=GW/iw, sy=GH/ih;
     const gp=pts.map(pt=>({x:pt.x*sx, y:pt.y*sy, q:pt.q}));
-    // Gaussian-weighted (Shepard) blend: smoothing radius ≈ one sample spacing so neighbouring
-    // points overlap and the surface no longer pins to each reading (removes the "bullseye" discs).
-    const sigma=Math.max(2,GW*HEAT_SMOOTH), inv2s2=1/(2*sigma*sigma);
     const off=document.createElement('canvas'); off.width=GW; off.height=GH;
     const octx=off.getContext('2d'), img=octx.createImageData(GW,GH), d=img.data;
     for(let y=0;y<GH;y++){ for(let x=0;x<GW;x++){
       let sw=0,sq=0;
-      for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; const wgt=Math.exp(-(dx*dx+dy*dy)*inv2s2); sw+=wgt; sq+=wgt*gp[i].q; }
+      for(let i=0;i<gp.length;i++){ const dx=x-gp[i].x, dy=y-gp[i].y; let d2=dx*dx+dy*dy; if(d2<1)d2=1;
+        const wgt=1/d2; sw+=wgt; sq+=wgt*gp[i].q; }
       const [r,g,b]=qColorRGB(sq/sw); const o=(y*GW+x)*4; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
     }}
     octx.putImageData(img,0,0);

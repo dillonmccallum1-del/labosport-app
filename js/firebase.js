@@ -28,7 +28,18 @@
     c._briefN=Math.max((v.briefImages||[]).length, v._briefN||0); delete c.briefImages;
     const strip=ph=>{ if(ph) delete ph.dataUrl; };               // keep {id,w,h}; image bytes live in Storage
     (c.pitches||[]).forEach(p=>{ (p.photos||[]).forEach(strip);
-      if(p.tests) Object.keys(p.tests).forEach(k=>{ const ph=p.tests[k]&&p.tests[k].photos; if(ph) Object.keys(ph).forEach(pos=>(ph[pos]||[]).forEach(strip)); }); });
+      if(p.tests) Object.keys(p.tests).forEach(k=>{ const td=p.tests[k]; if(!td) return;
+        if(td.photos) Object.keys(td.photos).forEach(pos=>(td.photos[pos]||[]).forEach(strip));
+        // Firestore REJECTS nested arrays, and test-dot `positions` is an array of [x,y] pairs — so a
+        // venue with custom dot locations failed to push entirely (silent), and the layout never synced.
+        // Serialise it to a string here; fromFirestore() parses it back on the receiving device.
+        if(Array.isArray(td.positions)){ td.posJSON=JSON.stringify(td.positions); delete td.positions; }
+      }); });
+    return c; }
+  // inverse of forFirestore's positions encoding — run on every incoming venue before it's merged
+  function fromFirestore(v){ const c=JSON.parse(JSON.stringify(v));
+    (c.pitches||[]).forEach(p=>{ if(p.tests) Object.keys(p.tests).forEach(k=>{ const td=p.tests[k];
+      if(td && typeof td.posJSON==='string'){ try{ td.positions=JSON.parse(td.posJSON); }catch(e){} delete td.posJSON; } }); });
     return c; }
   function contentHash(v){ const c=forFirestore(v); delete c._ts; delete c._by; return JSON.stringify(c); }
 
@@ -63,7 +74,7 @@
         if(ch.doc.metadata.hasPendingWrites) return;        // ignore our own writes
         const id=ch.doc.id;
         if(ch.type==='removed'){ delete lastSeen[id]; hooks.removeRemoteVenue(id); }
-        else { const data=ch.doc.data(); data.id=data.id||id; lastSeen[id]=contentHash(data); hooks.applyRemoteVenue(data); }
+        else { const data=ch.doc.data(); data.id=data.id||id; lastSeen[id]=contentHash(data); hooks.applyRemoteVenue(fromFirestore(data)); }
       });
     }, err=>status('⚠ Team sync error: '+(err&&err.message||err),'warn'));
   }
