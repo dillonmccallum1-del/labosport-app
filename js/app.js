@@ -35,8 +35,10 @@ const REDUCIBLE = new Set(['ndvi','clegg','traction','moisture','moisture2','moi
 const REDUCED_N = 9;
 function venueOf(p){ if(!p) return null; const vs=(typeof state!=='undefined'&&state&&state.venues)||[];
   return vs.find(v=>v.pitches&&v.pitches.some(x=>x===p||(x.id&&x.id===p.id)))||null; }
-function pitchReduced(p){ const v=venueOf(p); if(!v||!v.pitches||v.pitches.length<=1) return false;
-  return !(p.bench&&p.bench.role==='bench'); }   // reduced for every pitch except the venue benchmark
+function pitchReduced(p){ if(p&&p.bench&&p.bench.role==='bench') return false;   // the ★ benchmark always gets the full grid
+  if(p&&p.manual) return true;                    // manually added (+ pitch) pitches always use the reduced 9-spot survey
+  const v=venueOf(p); if(!v||!v.pitches||v.pitches.length<=1) return false;
+  return true; }                                  // reduced for every other pitch in a multi-pitch venue
 // Effective number of test positions for a pitch+metric (9 when reduced, else the metric's base count).
 function effN(p,key){ const t=TKEY[key]; if(!t) return 0;
   return (REDUCIBLE.has(key)&&t.n>REDUCED_N&&pitchReduced(p))?REDUCED_N:t.n; }
@@ -288,11 +290,15 @@ let state=null, CUR=null, CURP=0;
 function uid(){return 'id'+Math.random().toString(36).slice(2,9);}
 function nameKey(s){return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');}
 function seedId(name){return 'seed_'+nameKey(name);}   // stable id so re-seeding reconciles instead of duplicating
-function newPitch(name){
-  const tests={}; TESTS.forEach(t=>{ tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; if(t.depthSel) tests[t.key].depth=VWC_DEFAULT_DEPTH[t.key]||VWC_DEPTHS[0]; });
+function newPitch(name,manual){
+  const tests={}; TESTS.forEach(t=>{ tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; if(t.depthSel) tests[t.key].depth=VWC_DEFAULT_DEPTH[t.key]||VWC_DEPTHS[0];
+    if(manual){ const n=(REDUCIBLE.has(t.key)&&t.n>REDUCED_N)?REDUCED_N:t.n;   // manual pitches: 25-spot metrics drop to 9
+      tests[t.key].positions=defaultPositions(n); tests[t.key].posTs=Date.now(); } });   // preload evenly spread map dots
   const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
   const risk={}; RISK.forEach(r=>risk[r[0]]=0);
-  return {id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},bench:{role:'',note:''},photos:[],photoNotes:'',vwc:VWC_DEFAULT_ACTIVE.slice()};
+  const p={id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},bench:{role:'',note:''},photos:[],photoNotes:'',vwc:VWC_DEFAULT_ACTIVE.slice()};
+  if(manual) p.manual=1;
+  return p;
 }
 function venueFromSeed(s){
   const v={id:seedId(s.name),name:s.name,alias:s.alias,address:s.address,contact:s.contact,position:s.position,
@@ -1406,11 +1412,12 @@ function bind(){
 }
 
 /* ----------------------------- actions ----------------------------- */
-async function addPitch(){ const name=await uiPrompt('Name for the new pitch','Pitch '+(venue().pitches.length+1)); if(name==null)return; const t=name.trim(); if(!t)return; venue().pitches.push(newPitch(t)); CURP=venue().pitches.length-1; save(); render(); }
+async function addPitch(){ const name=await uiPrompt('Name for the new pitch','Pitch '+(venue().pitches.length+1)); if(name==null)return; const t=name.trim(); if(!t)return; venue().pitches.push(newPitch(t,true)); CURP=venue().pitches.length-1; save(); render(); }   // manual add → reduced 9-spot pitch with preloaded maps
 function addVwcDepth(){ const p=pitch(); const keys=vwcKeys(p); const next=VWC_POOL.find(k=>!keys.includes(k));
   if(!next){ toast('Maximum depths reached'); return; }
   keys.push(next);   // activate the next free slot with a fresh bucket + default depth, then open it
   p.tests[next]={values:Array(TKEY[next].n).fill(null),comment:'',method:'',photos:{},depth:VWC_DEFAULT_DEPTH[next]||VWC_DEPTHS[0]};
+  if(pitchReduced(p)){ p.tests[next].positions=defaultPositions(REDUCED_N); p.tests[next].posTs=Date.now(); }   // preload even 3×3 dots on reduced pitches
   save(); go('test:'+next,true); }
 async function renamePitch(i){ const v=venue(); const p=v.pitches[i]; if(!p)return; const name=await uiPrompt('Rename pitch',p.name); if(name==null)return; const t=name.trim(); if(!t)return; p.name=t; save(); render(); toast('Pitch renamed'); }
 function addVenueManual(){ const v={id:uid(),name:'New venue',alias:'',address:'',contact:'',position:'',email:'',phone:'',grass:'',cluster:'Charlotte',wr:'',venueComment:'',params:{},briefLoaded:false,pitches:[newPitch('Pitch 1')]}; state.venues.push(v); CUR=v.id; CURP=0; save(); go('venueform',true); }
