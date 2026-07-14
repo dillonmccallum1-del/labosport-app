@@ -8,9 +8,8 @@ const TESTS = [
   {key:'turf_cover', name:'Turf cover',                   n:3,  unit:'%',    pri:false},
   {key:'weed',       name:'Weed content',                 n:3,  unit:'%',    pri:false},
   {key:'turf_height',name:'Turf height',                  n:3,  unit:'mm',   pri:false},
-  {key:'infil',      name:'Infiltration rate',            n:3,  unit:'mm/h', pri:false},
+  {key:'infil',      name:'Infiltration rate',            n:2,  unit:'mm/h', pri:false},
   {key:'soil',       name:'Soil properties (root depth)', n:3,  unit:'mm',   pri:false, note:'Measure root depth (mm) at each position. Add a photo per observation below.', obsPhotos:true},
-  {key:'shear',      name:'Root zone shear strength',     n:1,  unit:'Nm',   pri:false},
   {key:'ndvi',       name:'Turf health (NDVI)',           n:25, unit:'',     pri:false},
   {key:'clegg',      name:'Clegg impact (compaction)',    n:25, unit:'g',    pri:true},
   {key:'traction',   name:'Surface traction / 19 mm stud',n:25, unit:'Nm',   pri:true},
@@ -24,7 +23,7 @@ const TESTS = [
 // Selectable measurement depths for the VWC test; stored per slot on p.tests.<key>.depth.
 const VWC_DEPTHS=['3.8 cm','7.6 cm','12.2 cm'];
 const VWC_POOL=['moisture','moisture2','moisture3','moisture4'];       // available depth slots (cap = 4)
-const VWC_DEFAULT_ACTIVE=['moisture','moisture2'];                     // two preloaded by default
+const VWC_DEFAULT_ACTIVE=['moisture2'];                                // only 7.6 cm preloaded by default — add more via the button
 const VWC_DEFAULT_DEPTH={moisture:'3.8 cm',moisture2:'7.6 cm',moisture3:'12.2 cm',moisture4:'7.6 cm'};
 const TKEY = Object.fromEntries(TESTS.map(t=>[t.key,t]));
 // Reduced testing: in a multi-pitch venue, only the chosen ★ benchmark pitch gets the
@@ -66,12 +65,20 @@ function mapTitleName(p,key){ return noParen(testDisplayName(p,key)); }
 // Grouped tests: several metrics recorded at the SAME shared positions, entered together on one screen.
 // Data still lives in each member's own tests[key] bucket, so reports/CSV/results are unchanged.
 const GROUPS = [
-  {key:'turf', name:'Turf cover, weed & height', n:3, members:['turf_cover','weed','turf_height']},
+  {key:'turf',    name:'Turf cover, weed & height',        members:['turf_cover','weed','turf_height']},
+  {key:'infsoil', name:'Infiltration & soil properties',   members:['infil','soil']},
+  {key:'ndvivwc', name:'Turf health (NDVI) & soil moisture', members:['ndvi','moisture2']},
 ];
 const GKEY = Object.fromEntries(GROUPS.map(g=>[g.key,g]));
 const GROUP_OF = {}; GROUPS.forEach(g=>g.members.forEach(m=>GROUP_OF[m]=g));   // memberKey -> group
-const GMETRIC_LABEL = {turf_cover:'Turf cover', weed:'Weed', turf_height:'Height'};
+const GMETRIC_LABEL = {turf_cover:'Turf cover', weed:'Weed', turf_height:'Height',
+  infil:'Infiltration', soil:'Root depth', ndvi:'NDVI', moisture2:'VWC'};
 function metricShort(k){ return GMETRIC_LABEL[k] || (TKEY[k]?TKEY[k].name:k); }
+// Effective shared-position count for a group on a pitch (members can differ — e.g. infil 2 vs soil 3,
+// and NDVI/VWC drop 25→9 on reduced pitches). Dots = the max; members with fewer skip the extra rows.
+function gN(p,g){ return Math.max(...g.members.map(k=>effN(p,k))); }
+// Group title with any member's VWC depth appended (e.g. "… soil moisture — 7.6 cm").
+function groupDisplayName(p,g){ const d=g.members.map(k=>{const t=TKEY[k]; return t&&t.depthSel&&p.tests[k]&&p.tests[k].depth;}).find(Boolean); return g.name+(d?' — '+d:''); }
 
 /* ----------------------------- FIFA quality bands ----------------------------- */
 /* 5-level performance scale derived from assets/FIFA_Pitch_Performance_Standards.xlsx.
@@ -294,6 +301,10 @@ function newPitch(name,manual){
   const tests={}; TESTS.forEach(t=>{ tests[t.key]={values:Array(t.n).fill(null),comment:'',method:'',photos:{}}; if(t.depthSel) tests[t.key].depth=VWC_DEFAULT_DEPTH[t.key]||VWC_DEPTHS[0];
     if(manual){ const n=(REDUCIBLE.has(t.key)&&t.n>REDUCED_N)?REDUCED_N:t.n;   // manual pitches: 25-spot metrics drop to 9
       tests[t.key].positions=defaultPositions(n); tests[t.key].posTs=Date.now(); } });   // preload evenly spread map dots
+  if(manual){ GROUPS.forEach(g=>{   // grouped members share one preloaded layout (shorter members take P1…Pn)
+    const ns=g.members.map(k=>{const t=TKEY[k]; return (REDUCIBLE.has(k)&&t.n>REDUCED_N)?REDUCED_N:t.n;});
+    const base=defaultPositions(Math.max(...ns));
+    g.members.forEach((k,ix)=>{ tests[k].positions=base.slice(0,ns[ix]).map(a=>a.slice()); }); }); }
   const audit={}; AUDIT.forEach(s=>audit[s[0]]={fields:{},brief:''});
   const risk={}; RISK.forEach(r=>risk[r[0]]=0);
   const p={id:uid(),name:name||'Pitch 1',tests,audit,risk,overall:{level:0,comment:''},bench:{role:'',note:''},photos:[],photoNotes:'',vwc:VWC_DEFAULT_ACTIVE.slice()};
@@ -867,22 +878,23 @@ function scrVenue(){
     if(g){   // collapse all members into a single combined row, rendered at the first member's slot
       if(shownGroups.has(g.key)) return '';
       shownGroups.add(g.key);
-      let done=0,total=0; g.members.forEach(m=>{ done+=stats(p.tests[m].values).done; total+=TKEY[m].n; });
+      let done=0,total=0; g.members.forEach(m=>{ done+=statN(p,m).done; total+=effN(p,m); });
       const status=done?`<span class="pill">${done}/${total}</span>`:'<span class="chev">›</span>';
+      const N=gN(p,g), pri=g.members.some(m=>TKEY[m].pri);
       return `<div class="row" data-go="grp:${g.key}"><div class="ic">⬡</div>
-        <div class="meta"><div class="t">${esc(g.name)}</div>
-        <div class="d">${g.n} shared location${g.n>1?'s':''} · ${g.members.length} readings each</div></div>${status}</div>`;
+        <div class="meta"><div class="t">${esc(groupDisplayName(p,g))} ${pri?'<span class="badge-pri">PRIORITY</span>':''}</div>
+        <div class="d">${N} shared location${N>1?'s':''} · ${g.members.length} metrics</div></div>${status}</div>`;
     }
-    if(t.depthSel){   // VWC pool: render one row per active depth slot + an "Add another depth" row
+    if(t.depthSel){   // VWC pool: render one row per active NON-GROUPED depth slot + an "Add another depth" row
       if(vwcDone) return ''; vwcDone=true;
-      const keys=vwcKeys(p);
+      const keys=vwcKeys(p).filter(k=>!GROUP_OF[k]);   // grouped slots (e.g. 7.6 cm with NDVI) live in their group row
       const rows=keys.map(k=>{ const tk=TKEY[k], st=statN(p,k), nk=effN(p,k);
         const status=st.done?`<span class="pill">${st.done}/${nk}</span>`:'<span class="chev">›</span>';
         return `<div class="row" data-go="test:${k}"><div class="ic">⬡</div>
           <div class="meta"><div class="t">${esc(testDisplayName(p,k))} ${tk.pri?'<span class="badge-pri">PRIORITY</span>':''}</div>
           <div class="d">${nk} positions${st.avg!=null?` · avg ${fmt(st.avg,tk.unit)}`:''}</div></div>${status}</div>`;
       }).join('');
-      const add=keys.length<VWC_POOL.length ? `<div class="row" data-addvwc="1" style="cursor:pointer"><div class="ic">＋</div>
+      const add=vwcKeys(p).length<VWC_POOL.length ? `<div class="row" data-addvwc="1" style="cursor:pointer"><div class="ic">＋</div>
         <div class="meta"><div class="t">Add another depth</div><div class="d">Record VWC at a different probe depth</div></div><span class="chev">›</span></div>` : '';
       return rows+add;
     }
@@ -979,35 +991,50 @@ function scrTest(key){
         <textarea id="testComment" placeholder="e.g. lower readings in the droughted southern in-goal area…">${esc(td.comment)}</textarea></div></div>
     ${obsBox}
     ${nx?`<button class="btn primary" id="nextTest">Next test: ${esc(testDisplayName(p,nx.key))} →</button>`:''}
-    ${t.depthSel&&vwcKeys(p).length>1?`<button class="btn ghost" id="rmVwc" style="color:var(--crit)">🗑 Remove this depth</button>`:''}
+    ${t.depthSel&&!GROUP_OF[key]&&vwcKeys(p).length>1?`<button class="btn ghost" id="rmVwc" style="color:var(--crit)">🗑 Remove this depth</button>`:''}
     <button class="btn ghost" data-back="1">Done</button>`;
 }
 
-// combined entry for a group of metrics sharing the same positions (turf cover, weed, height)
+// combined entry for a group of metrics sharing the same positions (turf; infil+soil; NDVI+VWC)
 function scrGroup(gkey){
-  const g=GKEY[gkey]; const p=pitch();
+  const g=GKEY[gkey]; const p=pitch(); const N=gN(p,g);
   const method=g.members.map(k=>p.tests[k].method).find(x=>x&&x.trim())||'';
   const comment=g.members.map(k=>p.tests[k].comment).find(x=>x&&x.trim())||'';
-  const statCells=g.members.map(k=>{ const st=stats(p.tests[k].values);
+  const statCells=g.members.map(k=>{ const st=statN(p,k);
     return `<div class="s"><div class="l">${esc(metricShort(k))} avg</div><div class="n" id="gavg_${k}">${st.avg!=null?fmt(st.avg,''):'—'}</div></div>`;}).join('');
-  const rows=Array.from({length:g.n},(_,i)=>{
-    const cells=g.members.map(k=>{ const t=TKEY[k]; const v=p.tests[k].values[i];
+  const rows=Array.from({length:N},(_,i)=>{
+    const cells=g.members.map(k=>{ const t=TKEY[k]; if(effN(p,k)<=i) return '';   // member with fewer positions (e.g. infil 2 of 3) skips extra rows
+      const v=p.tests[k].values[i];
       return `<label class="grpcell ${v!=null?'done':''}"><span class="gl">${esc(metricShort(k))}</span>
         <input data-gpos="${i}" data-gkey="${k}" inputmode="decimal" enterkeyhint="next" placeholder="–" value="${v!=null?v:''}"><span class="gu">${esc(t.unit)||'&nbsp;'}</span></label>`;}).join('');
     return `<div class="grprow"><div class="grppn">P${i+1}</div><div class="grpcells">${cells}</div></div>`;
   }).join('');
-  return `<div class="hint">${esc(g.name)} · ${g.n} shared locations · record all three at each ⬡ <span class="saved" id="savedFlag">saved ✓</span></div>
+  // per-member VWC depth selector (e.g. the 7.6 cm slot grouped with NDVI)
+  const depthBoxes=g.members.filter(k=>TKEY[k].depthSel).map(k=>`<div class="card" style="padding:10px 12px;margin-bottom:8px"><div class="field" style="margin:0">
+      <label>${esc(metricShort(k))} measurement depth</label>
+      <select data-gdepth="${k}">${VWC_DEPTHS.map(dp=>`<option ${(p.tests[k].depth||VWC_DEPTHS[0])===dp?'selected':''}>${esc(dp)}</option>`).join('')}</select></div></div>`).join('');
+  // observation photos for members that use them (soil root depth)
+  const obsBoxes=g.members.filter(k=>TKEY[k].obsPhotos).map(k=>{ const td=p.tests[k]; const ph=td.photos||{};
+    const orows=Array.from({length:effN(p,k)},(_,i)=>{ const v=td.values[i];
+      const list=(ph[i]||[]).map(x=>`<div class="obsphoto"><img src="${x.dataUrl||''}" alt=""><button class="del" data-delobs="${k}|${i}|${x.id}">✕</button></div>`).join('');
+      return `<div class="obsrow"><div class="obshd"><b>P${i+1}</b>${v!=null?` · ${esc(shortNum(v))} ${esc(TKEY[k].unit)}`:' · no reading yet'}<button class="btn sm ghost" data-obsadd="${i}" data-obskey="${k}" style="float:right">＋ Photo</button></div>
+        <div class="obsgrid">${list||'<span class="hint" style="padding:0">No photos yet</span>'}</div></div>`; }).join('');
+    return `<h2 class="sec">${esc(metricShort(k))} — observation photos</h2><div class="card" style="padding:8px 12px">${orows}</div>`; }).join('');
+  const notes=g.members.map(k=>TKEY[k].note).filter(Boolean).map(n=>`<div class="hint">${esc(n)}</div>`).join('');
+  return `<div class="hint">${esc(groupDisplayName(p,g))} · ${N} shared location${N>1?'s':''} · record each metric at its ⬡ <span class="saved" id="savedFlag">saved ✓</span></div>
+    ${depthBoxes}
     ${pitchSVGGroup(g)}
-    <div class="leg"><span><i class="dot" style="background:var(--green)"></i> all 3 recorded</span><span><i class="dot" style="background:#bfe0cc"></i> partial</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
+    <div class="leg"><span><i class="dot" style="background:var(--green)"></i> all recorded</span><span><i class="dot" style="background:#bfe0cc"></i> partial</span><span><i class="dot" style="background:#fff;border:1px solid var(--line)"></i> pending</span></div>
     <div class="card" style="padding:0">
       <div class="stat">${statCells}</div>
       <div class="grpentry">${rows}</div>
-    </div>
+    </div>${notes}
     <div class="card" style="padding:0">
       <div class="field"><label>Method used to collect this data</label>
-        <input id="grpMethod" inputmode="text" placeholder="e.g. visual % estimate in 0.25 m² quadrat; sward height by ruler" value="${esc(method)}"></div>
+        <input id="grpMethod" inputmode="text" placeholder="e.g. double-ring infiltrometer; root depth by profile sampler" value="${esc(method)}"></div>
       <div class="field"><label>Comments / observations</label>
-        <textarea id="grpComment" placeholder="e.g. weed concentrated in southern in-goal; sward thinning near goalmouth…">${esc(comment)}</textarea></div></div>
+        <textarea id="grpComment" placeholder="e.g. slower drainage in southern in-goal; shallow rooting near goalmouth…">${esc(comment)}</textarea></div></div>
+    ${obsBoxes}
     <button class="btn ghost" data-back="1">Done</button>`;
 }
 
@@ -1157,7 +1184,8 @@ function scrSettings(){
 const PW=360, PH=140, PPAD=14;
 function defaultPositions(n){
   let pts;
-  if(n<=3) pts=[[.5,.28],[.5,.5],[.5,.72]];
+  if(n===2) pts=[[.32,.5],[.68,.5]];   // two evenly spread spots, one per half
+  else if(n<=3) pts=[[.5,.28],[.5,.5],[.5,.72]];
   else if(n===6) pts=[[.28,.3],[.28,.7],[.5,.3],[.5,.7],[.72,.3],[.72,.7]];
   else if(n===9){ pts=[]; const g=[1/6,0.5,5/6];   // 3×3 snake grid (reduced non-benchmark survey)
     g.forEach((y,r)=>{ const xs=(r%2)?g.slice().reverse():g; xs.forEach(x=>pts.push([x,y])); }); }   // P1-3 top L→R, P4-6 mid R→L, P7-9 bottom L→R — aligns with heatGridN(side=3)
@@ -1227,12 +1255,15 @@ function qualityLegend(key,grass){
 }
 
 /* ---- grouped tests: shared positions across all members ---- */
-function groupPositions(p,g){
-  for(const k of g.members){ const td=p.tests&&p.tests[k]; if(td&&td.positions&&td.positions.length===g.n) return td.positions; }
-  return defaultPositions(g.n);
+function groupPositions(p,g){ const n=gN(p,g);
+  for(const k of g.members){ const td=p.tests&&p.tests[k]; if(td&&td.positions&&td.positions.length===n) return td.positions; }
+  return defaultPositions(n);
 }
-function setGroupPositions(p,g,pos){ const ts=Date.now(); g.members.forEach(k=>{ if(p.tests[k]){ p.tests[k].positions = pos ? pos.map(a=>a.slice()) : null; p.tests[k].posTs=ts; } }); }
-function groupDotStyle(p,g,k){ const cnt=g.members.filter(m=>p.tests[m].values[k]!=null).length; const full=cnt===g.members.length, part=cnt>0&&!full;
+function setGroupPositions(p,g,pos){ const ts=Date.now(); g.members.forEach(k=>{ if(p.tests[k]){
+  p.tests[k].positions = pos ? pos.slice(0,effN(p,k)).map(a=>a.slice()) : null;   // members with fewer positions keep just their share (P1…Pn)
+  p.tests[k].posTs=ts; } }); }
+function groupDotStyle(p,g,k){ const act=g.members.filter(m=>effN(p,m)>k);   // members that actually test this position
+  const cnt=act.filter(m=>p.tests[m].values[k]!=null).length; const full=act.length>0&&cnt===act.length, part=cnt>0&&!full;
   return {fill:full?'#1f7a4d':(part?'#bfe0cc':'#fff'), stroke:full?'#155c39':'#c2cad2', text:full?'#fff':'#6b7785'}; }
 function pitchSVGGroup(g){
   const p=pitch(), pos=groupPositions(p,g);
@@ -1240,7 +1271,7 @@ function pitchSVGGroup(g){
     return `<g class="dot" data-i="${k}"><circle cx="${x}" cy="${y}" r="11" fill="${s.fill}" stroke="${s.stroke}" stroke-width="1.5"/><text x="${x}" y="${y+3.5}" font-size="9" font-weight="700" text-anchor="middle" fill="${s.text}">${k+1}</text></g>`;}).join('');
   return `<div class="pitchwrap"><svg id="pitchSvg" viewBox="0 0 ${PW} ${PH}" style="width:100%;height:auto;background:#23823f;border-radius:12px;border:1px solid #1c6e34">
     ${pitchFieldInner()}${dots}</svg></div>
-    <div class="draghint">Drag a numbered dot to the spot you tested — all three readings share these locations</div>
+    <div class="draghint">Drag a numbered dot to the spot you tested — the grouped metrics share these locations</div>
     <div style="text-align:center;margin:-2px 0 8px"><button class="btn sm ghost" id="grpRand">🎲 Randomize</button> <button class="btn sm ghost" id="grpReset">↺ Reset to default</button></div>`;
 }
 function bindPitchDrag(){
@@ -1262,7 +1293,7 @@ function bindGroupPitchDrag(g){
   const svg=$('pitchSvg'); if(!svg) return; let dragging=null;
   function frac(e){ const r=svg.getBoundingClientRect(); const ux=(e.clientX-r.left)/r.width*PW, uy=(e.clientY-r.top)/r.height*PH;
     let fx=(ux-PPAD)/(PW-2*PPAD), fy=(uy-PPAD)/(PH-2*PPAD); return [Math.max(0,Math.min(1,fx)),Math.max(0,Math.min(1,fy))]; }
-  function ensure(){ const p=pitch(); let pos=groupPositions(p,g); if(!pos||pos.length!==g.n) pos=defaultPositions(g.n); pos=pos.map(a=>a.slice()); setGroupPositions(p,g,pos); return groupPositions(p,g); }
+  function ensure(){ const p=pitch(); const n=gN(p,g); let pos=groupPositions(p,g); if(!pos||pos.length!==n) pos=defaultPositions(n); pos=pos.map(a=>a.slice()); setGroupPositions(p,g,pos); return groupPositions(p,g); }
   svg.querySelectorAll('.dot').forEach(d=>d.addEventListener('pointerdown',ev=>{ ev.preventDefault(); dragging=+d.dataset.i; ensure(); try{svg.setPointerCapture(ev.pointerId);}catch(e){} }));
   svg.addEventListener('pointermove',ev=>{ if(dragging==null)return; const pos=ensure(); pos[dragging]=frac(ev); setGroupPositions(pitch(),g,pos);
     const x=PPAD+pos[dragging][0]*(PW-2*PPAD), y=PPAD+pos[dragging][1]*(PH-2*PPAD), d=svg.querySelector('.dot[data-i="'+dragging+'"]');
@@ -1279,7 +1310,7 @@ function bindGroupEntry(g){
       const val=raw===''?null:parseFloat(raw.replace(',','.')); pitch().tests[k].values[i]=(val==null||isNaN(val))?null:val;
       const stored=pitch().tests[k].values[i];
       inp.closest('.grpcell').classList.toggle('done',stored!=null);
-      const ae=$('gavg_'+k); if(ae){ const st=stats(pitch().tests[k].values); ae.textContent=st.avg!=null?fmt(st.avg,''):'—'; }
+      const ae=$('gavg_'+k); if(ae){ const st=statN(pitch(),k); ae.textContent=st.avg!=null?fmt(st.avg,''):'—'; }
       const d=document.querySelector('#pitchSvg .dot[data-i="'+i+'"]');   // recolour the shared dot by completeness
       if(d){ const s=groupDotStyle(pitch(),g,i); d.querySelector('circle').setAttribute('fill',s.fill); d.querySelector('circle').setAttribute('stroke',s.stroke); d.querySelector('text').setAttribute('fill',s.text); }
       save(true);
@@ -1288,8 +1319,9 @@ function bindGroupEntry(g){
   });
   if($('grpMethod'))$('grpMethod').oninput=()=>{ const v=$('grpMethod').value; g.members.forEach(k=>pitch().tests[k].method=v); save(true); };
   if($('grpComment'))$('grpComment').oninput=()=>{ const v=$('grpComment').value; g.members.forEach(k=>pitch().tests[k].comment=v); save(true); };
-  if($('grpRand'))$('grpRand').onclick=()=>{ setGroupPositions(pitch(),g,randomPositions(g.n)); save(true); render(); toast('Locations randomized'); };
+  if($('grpRand'))$('grpRand').onclick=()=>{ setGroupPositions(pitch(),g,randomPositions(gN(pitch(),g))); save(true); render(); toast('Locations randomized'); };
   if($('grpReset'))$('grpReset').onclick=()=>{ setGroupPositions(pitch(),g,null); save(true); render(); toast('Locations reset to default'); };
+  $('app').querySelectorAll('[data-gdepth]').forEach(sel=>sel.onchange=()=>{ pitch().tests[sel.dataset.gdepth].depth=sel.value; save(true); render(); });   // depth shows in titles
   bindGroupPitchDrag(g);
 }
 
@@ -1348,7 +1380,7 @@ function bind(){
   if($('testMethod'))$('testMethod').oninput=()=>{pitch().tests[cur().split(':')[1]].method=$('testMethod').value;save(true);};
   if($('testComment'))$('testComment').oninput=()=>{pitch().tests[cur().split(':')[1]].comment=$('testComment').value;save(true);};
   // observation photos (per position)
-  app.querySelectorAll('[data-obsadd]').forEach(b=>b.onclick=()=>{ obsTarget={key:cur().split(':')[1],pos:+b.dataset.obsadd}; $('obsPhotoInput').click(); });
+  app.querySelectorAll('[data-obsadd]').forEach(b=>b.onclick=()=>{ obsTarget={key:b.dataset.obskey||cur().split(':')[1],pos:+b.dataset.obsadd}; $('obsPhotoInput').click(); });   // group screens carry the member key
   app.querySelectorAll('[data-delobs]').forEach(b=>b.onclick=()=>{ const [k,pos,id]=b.dataset.delobs.split('|'); const td=pitch().tests[k]; if(td.photos&&td.photos[pos]){ td.photos[pos]=td.photos[pos].filter(x=>x.id!==id); if(!td.photos[pos].length) delete td.photos[pos]; } save(); render(); });
 
   // overall
@@ -1667,7 +1699,7 @@ const REPORT_MAP = {
   G:{'Fertilizer applications/yr (type & rate)':'g_fert','Herbicide applications per year':'g_herb','Other turf management activities':'g_other'},
   H:{'Additional playability risks':'h_risks','General comments on surface / maintenance':'h_comments'},
 };
-const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','shear','ndvi','clegg','traction'];   // VWC handled separately (one row per active depth)
+const RES_KEYS = ['turf_cover','turf_height','weed','infil','soil','ndvi','clegg','traction'];   // VWC handled separately (one row per active depth) · shear retired (no device)
 // Results rows for the VWC (soil-moisture) depth slots active on a pitch: [{key,label}].
 function vwcResRows(p){ return vwcKeys(p).map(k=>({key:k, label:'Soil Moisture Content'+((p.tests[k]&&p.tests[k].depth)?' — '+p.tests[k].depth:'')})); }
 function today(){ return new Date().toISOString().slice(0,10); }
